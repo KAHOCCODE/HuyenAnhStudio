@@ -1,0 +1,38 @@
+# Python environments
+.venv/
+.music-venv/
+.music-dml-venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Temporary files
+*.log
+*.tmp
+*.bak
+*.temp
+
+# Local secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Backup
+update-backups/
+
+# IDE
+.vscode/
+.idea/
