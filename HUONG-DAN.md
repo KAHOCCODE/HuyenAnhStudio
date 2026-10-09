@@ -129,3 +129,20 @@ Muốn tự chạy kiểm tra dành cho phát triển:
 - Qt video: https://doc.qt.io/qtforpython-6/PySide6/QtMultimediaWidgets/QGraphicsVideoItem.html
 
 Ảnh `Giao-dien.png` được chụp từ giao diện thật của ứng dụng, dùng nền minh họa và ba câu mẫu tự tạo; không phải video hay SRT của người dùng.
+
+## Tùy chỉnh khung hình và màu sắc
+
+Trong **03 THIẾT LẬP**, mở **Khung hình & màu sắc…**, rồi bật tùy chỉnh.
+
+- **Kích thước xuất:** giữ kích thước gốc, 16:9 (1920×1080), 9:16 (1080×1920), 1:1 (1080×1080), 4:3 (1440×1080), hoặc tự nhập rộng/cao. Kích thước tự nhập phải là số chẵn, từ 64 đến 7680 px.
+- **Zoom:** chọn nhanh 110% / 115% hoặc nhập từ 1 đến 3 lần. X/Y điều chỉnh vị trí lấy hình; 50/50 là chính giữa.
+- **Cách đặt video:** lấp đầy và cắt mép; giữ đủ hình trên nền màu; nền video làm mờ; hoặc nền mờ kèm viền động. Với nền mờ, có thể chỉnh khoảng nền và độ mờ. Viền động nằm quanh khung xuất.
+- **Lật ngang:** bật thủ công khi phù hợp nội dung. Chữ có sẵn trong phim cũng bị lật; phụ đề Việt và chữ thay thế do ứng dụng thêm vẫn đọc bình thường.
+- **Màu sắc:** chỉnh độ bão hòa, tương phản, độ sáng và tông lạnh/ấm. Giá trị trung tính lần lượt là 1, 1, 0, 0.
+- **Lớp phủ:** sương sáng nhẹ, bụi sáng chuyển động hoặc ánh sáng chuyển động. Cường độ từ 0 đến 0,3; đặt 0 để bỏ tác động.
+
+Bấm **Xem thử 10 giây** để áp dụng thiết lập và xuất đoạn thử từ vị trí đang xem. Đoạn thử có voice nếu voice đã ghép còn khớp với dự án; nếu chưa có, dùng âm gốc theo mức âm lượng đã chọn. Khung dựng chính vẫn hiển thị hình gốc để đặt vùng che chính xác; hiệu ứng khung hình được xem trong video xuất thử và bản xuất cuối.
+
+Các thiết lập được lưu cùng dự án và có thể hoàn tác. **Đặt lại** đưa về mặc định, **Hủy** bỏ chỉnh sửa trong hộp thoại. Tắt tùy chỉnh để dùng lại luồng xuất gốc. Có thể xuất video chỉ chỉnh hình mà không cần SRT; chọn **Không** khi được hỏi xuất kèm voice.
+
+Vùng che xử lý trước khi đổi bố cục. Chữ thay thế trên hình đi theo nội dung nên có thể bị cắt nếu nằm ngoài vùng crop. Phụ đề SRT được vẽ sau khi đổi khung và chỉnh màu, theo vị trí phần trăm của khung xuất, nên không bị lật hay crop theo video nguồn.

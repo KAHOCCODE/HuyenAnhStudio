@@ -4,6 +4,7 @@ import asyncio, hashlib, json, math, os, re, shutil, subprocess, threading, time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Callable
+from .video_effects import settings as effect_settings, output_size, picture_filter
 
 RATE = 24000
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,6 +38,7 @@ class Project:
     batch_reviewed: dict = field(default_factory=dict)
     voice_batch_kept: list = field(default_factory=list)
     export_preset: str = "veryfast"
+    video_effects: dict = field(default_factory=dict)
     max_fit: float = 1.6
     music_clean: dict = field(default_factory=dict)
     music_threads: int = 2
@@ -74,6 +76,7 @@ class Project:
         if not isinstance(p.music_threads,int) or not 1<=p.music_threads<=8:raise ValueError('Số luồng giảm nhạc phải từ 1 đến 8.')
         if not isinstance(p.music_clean,dict):raise ValueError('Cấu hình giảm nhạc không hợp lệ.')
         if p.export_preset not in ('ultrafast','veryfast','medium'):raise ValueError('Chế độ xuất không hợp lệ.')
+        effect_settings(p.video_effects)
         for region in p.screen_regions:validate_screen_region(region,p.duration)
         if len({r["id"] for r in p.screen_regions})!=len(p.screen_regions):raise ValueError("ID vùng chữ bị trùng.")
         for c in p.cues: validate_cue(c)
@@ -194,8 +197,8 @@ def ass_text(text):
     # ASS overrides must never execute supplied SRT text.
     return plain(text).replace('\\','\\\u200b').replace('{','｛').replace('}','｝').replace('\n',r'\N')
 
-def write_ass(path,p):
-    st=p.style; w,h=p.width,p.height
+def write_ass(path,p, *, cues=True, regions=True, canvas=None, mirror_regions=False):
+    st=p.style; w,h=canvas or (p.width,p.height)
     # Font size is specified on a 1080-high canvas, proportional for other resolutions.
     scale=h/1080
     margin=max(0,round(w*(100-st['width'])/200))
@@ -214,13 +217,15 @@ Style: Default,{st['font'].replace(',', '')},{st['size']*scale:.3f},{ass_color(s
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     events=[]
-    for c in p.cues:
+    for c in (p.cues if cues else []):
         if not plain(c.text): continue
         text=ass_text(c.text)
         events.append(f'Dialogue: 0,{stamp(c.start,True)},{stamp(c.end,True)},Default,,0,0,0,,{{\\pos({w*st["x"]/100:.2f},{h*st["y"]/100:.2f})}}{text}')
-    for r in p.screen_regions:
+    for r in (p.screen_regions if regions else []):
         if not r.get('enabled',True) or not plain(r['text']):continue
-        x,y,rw,rh=region_pixels(p,r);cx=x+rw/2;cy=y+rh/2
+        x,y,rw,rh=region_pixels(p,r)
+        if mirror_regions:x=w-x-rw
+        cx=x+rw/2;cy=y+rh/2
         tags=(r'\an5\q0'+f'\\pos({cx:.2f},{cy:.2f})'+f'\\fs{r["size"]*scale:.2f}'+f'\\bord{3*scale:.3f}\\shad{scale:.3f}\\b1'+r'\1c'+ass_color(r['color']))
         events.append(f'Dialogue: 1,{stamp(r["start"],True)},{stamp(r["end"],True)},Default,,{x},{max(0,w-x-rw)},0,,{{{tags}}}{ass_text(r["text"])}')
     Path(path).write_text(header+'\n'.join(events)+'\n',encoding='utf-8-sig')
@@ -240,6 +245,12 @@ def video_filter(p,ass_name='subtitles.ass'):
             color=r.get('fill',r.get('color','#171717'));ass_color(color)
             filters.append(f"{source}drawbox=x={x}:y={y}:w={w}:h={h}:color={color}@{r.get('opacity',1)}:t=fill:enable='{enable}'{out}")
         source=out
+    effects=effect_settings(p.video_effects)
+    if effects['enabled']:
+        if effects['flip']:
+            filters.append(source+'hflip[flipped]');source='[flipped]'
+        filters.append(source+"subtitles=filename='regions.ass'[annotated]")
+        filters.append(picture_filter(p,'[annotated]'));source='[picture]'
     filters.append(source+f"subtitles=filename='{ass_name}',setpts=(PTS-STARTPTS)/{p.speed:.9f},pad=ceil(iw/2)*2:ceil(ih/2)*2[v]")
     return ';'.join(filters)
 
@@ -551,7 +562,7 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
 
 def check_project(p):
     if not p.video or not Path(p.video).is_file(): raise ValueError('Hãy chọn video đang tồn tại.')
-    if not p.cues and not p.screen_regions and not p.music_clean.get('enabled'): raise ValueError('Hãy nhập SRT hoặc thêm vùng chữ / làm mờ trước.')
+    effect_settings(p.video_effects)
     for r in p.screen_regions:validate_screen_region(r,p.duration)
     for c in p.cues:
         validate_cue(c)
@@ -567,7 +578,12 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
     if out.exists(): raise ValueError('Tên tệp đã tồn tại. Hãy chọn tên mới để giữ bản cũ.')
     cache=Path(cache);cache.mkdir(parents=True,exist_ok=True)
     job=cache/('render-'+uuid.uuid4().hex[:10]);job.mkdir()
-    write_ass(job/'subtitles.ass',p)
+    effects=effect_settings(p.video_effects)
+    if effects['enabled']:
+        write_ass(job/'subtitles.ass',p,regions=False,canvas=output_size(p))
+        write_ass(job/'regions.ass',p,cues=False,mirror_regions=effects['flip'])
+    else:
+        write_ass(job/'subtitles.ass',p)
     partial=out.with_name(out.stem+'.partial'+out.suffix)
     graph=video_filter(p)
     args=[binary('ffmpeg'),'-y','-nostdin']
