@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBo
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QVideoSink,QMediaDevices
 
 from .core import *
+from .effects_ui import EffectsDialog
 
 VOICES={'Nam Minh · Nam':'vi-VN-NamMinhNeural','Hoài My · Nữ':'vi-VN-HoaiMyNeural'}
 
@@ -499,6 +500,8 @@ class Window(QMainWindow):
         r=QHBoxLayout();self.cue_voice=QComboBox();self.cue_voice.addItem('Giọng mặc định','');[self.cue_voice.addItem(k,v) for k,v in VOICES.items()];r.addWidget(self.cue_voice);self.cue_rate=QSpinBox();self.cue_rate.setRange(-40,100);self.cue_rate.setSuffix(' %');self.cue_rate.setToolTip('Tốc độ bổ sung riêng câu này');r.addWidget(self.cue_rate);r.addWidget(self.button('Áp dụng câu',self.apply_cue,True));r.addWidget(self.button('Tạo / nghe riêng câu',self.sample));el.addLayout(r);el.addWidget(self.button('Đóng khung sửa',self.editor_dialog.hide));actions=QHBoxLayout();actions.addWidget(self.button('Sửa câu đang chọn…',self.show_editor));actions.addWidget(self.button('Bản nhẹ toàn phim…',self.make_proxy));cl.addLayout(actions);self.split.addWidget(center)
         right=QScrollArea();right.setWidgetResizable(True);right.setMinimumWidth(295);right.setMaximumWidth(375);props=QWidget();pr=QVBoxLayout(props);pr.setContentsMargins(12,0,5,0)
         pr.addWidget(QLabel('03  THIẾT LẬP'))
+        pr.addWidget(self.button('Khung hình & màu sắc…',self.video_effects_dialog))
+        self.effects_summary=QLabel();self.effects_summary.setWordWrap(True);pr.addWidget(self.effects_summary)
         stylebox=QGroupBox('Phụ đề');form=QFormLayout(stylebox)
         self.font_picker=QFontComboBox();self.font_picker.currentFontChanged.connect(self.visual_changed);form.addRow('Phông chữ',self.font_picker)
         self.font_size=self.spin(18,120,52,0,self.visual_changed);form.addRow('Cỡ chữ / 1080p',self.font_size)
@@ -595,7 +598,25 @@ class Window(QMainWindow):
         self.mx.setValue(m['x']);self.my.setValue(m['y']);self.mw.setValue(m['w']);self.mh.setValue(m['h']);self.opacity.setValue(m['opacity'])
         self.work.setValue(p.work_speed);self.final.setValue(p.final_speed);self.voice.setCurrentIndex(max(0,self.voice.findData(p.voice)));self.rate.setValue(p.tts_rate);self.workers.setValue(p.tts_workers);self.maxfit.setValue(p.max_fit);self.vol.setValue(p.original_volume*100);self.vvol.setValue(p.voice_volume*100)
         self.export_mode.setCurrentIndex(max(0,self.export_mode.findData(p.export_preset)))
+        effects=effect_settings(p.video_effects)
+        w,h=output_size(p)
+        self.effects_summary.setText(f'Khung xuất: {w} × {h} · Zoom {effects["zoom"]*100:.0f}%' if effects['enabled'] else 'Khung xuất: giữ nguyên video gốc')
         self.syncing=False
+    def video_effects_dialog(self):
+        if not self.guard():return
+        dialog=EffectsDialog(self,self.p.video_effects)
+        if dialog.exec()!=QDialog.Accepted:return
+        self.push_undo();self.p.video_effects=dialog.values;self.load_controls();self.changed(False)
+        if dialog.preview_requested:self.render_effects_sample()
+    def render_effects_sample(self):
+        if not self.guard():return
+        if self.editor_dirty and not self.commit_editor():return
+        try:check_project(self.p)
+        except Exception as e:self.error(str(e));return
+        p=copy.deepcopy(self.p);cache=self.cache;path=cache/('Khung-hinh-'+uuid.uuid4().hex[:6]+'.mp4')
+        start=max(0,self.source_position()/1000)/p.speed
+        voice=voice_ready(p,cache)
+        self.start_job(lambda c,r:export_video(p,cache,path,c,r,with_voice=voice,preview=start,allow_partial=True),self.export_done,'Xem thử khung hình 10 giây')
     def export_mode_changed(self):
         if self.syncing:return
         if self.busy:self.load_controls();return
