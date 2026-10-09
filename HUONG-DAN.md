@@ -132,7 +132,7 @@ Muốn tự chạy kiểm tra dành cho phát triển:
 
 ## Tùy chỉnh khung hình và màu sắc
 
-Trong **03 THIẾT LẬP**, mở **Khung hình & màu sắc…**, rồi bật tùy chỉnh.
+Trong **03 THIẾT LẬP**, mở **Khung hình & màu sắc…**. Các ô nhập luôn thao tác được; thay đổi thông số hoặc kéo hình sẽ tự bật tùy chỉnh.
 
 - **Kích thước xuất:** giữ kích thước gốc, 16:9 (1920×1080), 9:16 (1080×1920), 1:1 (1080×1080), 4:3 (1440×1080), hoặc tự nhập rộng/cao. Kích thước tự nhập phải là số chẵn, từ 64 đến 7680 px.
 - **Zoom:** chọn nhanh 110% / 115% hoặc nhập từ 1 đến 3 lần. X/Y điều chỉnh vị trí lấy hình; 50/50 là chính giữa.
@@ -146,3 +146,11 @@ Bấm **Xem thử 10 giây** để áp dụng thiết lập và xuất đoạn t
 Các thiết lập được lưu cùng dự án và có thể hoàn tác. **Đặt lại** đưa về mặc định, **Hủy** bỏ chỉnh sửa trong hộp thoại. Tắt tùy chỉnh để dùng lại luồng xuất gốc. Có thể xuất video chỉ chỉnh hình mà không cần SRT; chọn **Không** khi được hỏi xuất kèm voice.
 
 Vùng che xử lý trước khi đổi bố cục. Chữ thay thế trên hình đi theo nội dung nên có thể bị cắt nếu nằm ngoài vùng crop. Phụ đề SRT được vẽ sau khi đổi khung và chỉnh màu, theo vị trí phần trăm của khung xuất, nên không bị lật hay crop theo video nguồn.
+
+### Chỉnh trực tiếp trên khung ảnh
+
+- Dừng video ở hình cần chỉnh rồi mở **Khung hình & màu sắc…**. Bên trái là ảnh tại vị trí đó; bên phải là các thiết lập có thanh cuộn.
+- Giữ chuột trái kéo hình để đổi bố cục. Với khung vừa khít ở zoom 100%, tăng zoom hoặc chọn tỷ lệ khác để có khoảng dịch hình.
+- Cuộn chuột trên ảnh hoặc kéo ô vuông ở góc ra/vào để zoom. Nhấp đúp trên ảnh để căn giữa. X/Y/Zoom cập nhật theo thao tác và dùng cho bản xuất.
+- Khung ảnh là bản xem bố cục tĩnh, có lật ngang và nền minh họa; màu, hiệu ứng, vùng che và phụ đề cần kiểm tra bằng **Xem thử 10 giây**.
+- **Áp dụng** lưu vào trạng thái dự án đang mở; **Hủy** bỏ các thao tác trong hộp thoại. Bỏ tích bật tùy chỉnh nếu muốn xuất lại hình gốc.

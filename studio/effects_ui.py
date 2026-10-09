@@ -2,16 +2,19 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QComboBox, QCheckBox, QDoubleSpinBox, QSpinBox, QPushButton,
-    QLabel, QColorDialog, QDialogButtonBox, QMessageBox, QScrollArea, QWidget)
+    QLabel, QColorDialog, QDialogButtonBox, QMessageBox, QScrollArea, QWidget, QSplitter)
 from PySide6.QtGui import QColor
 from .video_effects import settings
+from .frame_editor import FrameEditor
 
 
 class EffectsDialog(QDialog):
     def __init__(self, parent, value):
         super().__init__(parent)
         self.setWindowTitle('Khung hình & màu sắc')
-        self.resize(780, 730)
+        screen = self.screen().availableGeometry()
+        self.resize(min(1120, screen.width()-40), min(720, screen.height()-80))
+        self._loading = True
         self.values = settings(value)
         self.controls = {}
         self.preview_requested = False
@@ -19,10 +22,26 @@ class EffectsDialog(QDialog):
         self.enabled = QCheckBox('Bật tùy chỉnh khung hình và hiệu ứng khi xuất')
         self.enabled.setChecked(self.values['enabled'])
         root.addWidget(self.enabled)
+        split = QSplitter(Qt.Horizontal)
+        root.addWidget(split, 1)
+        visual = QWidget(); visual_layout = QVBoxLayout(visual)
+        visual_layout.setContentsMargins(0, 0, 8, 0)
+        hint = QLabel('Kéo hình để đổi bố cục · Cuộn chuột / kéo góc để zoom · Nhấp đúp để căn giữa')
+        hint.setWordWrap(True); visual_layout.addWidget(hint)
+        frame = getattr(getattr(getattr(parent, 'preview', None), 'overlay', None), 'frame', None)
+        project = getattr(parent, 'p', None)
+        source_size = (project.width, project.height) if project else (1920, 1080)
+        self.canvas = FrameEditor(frame, source_size, self)
+        visual_layout.addWidget(self.canvas, 1)
+        self.state_label = QLabel(); self.state_label.setWordWrap(True); visual_layout.addWidget(self.state_label)
+        preview_note = QLabel('Khung này dùng ảnh tại vị trí đang xem để chỉnh bố cục. Nền mờ là minh họa nhanh; màu sắc, lớp phủ, phụ đề và chuyển động xem bằng “Xem thử 10 giây”.')
+        preview_note.setWordWrap(True); visual_layout.addWidget(preview_note)
+        split.addWidget(visual)
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
-        body = QWidget(); columns = QHBoxLayout(body)
+        scroll.setMinimumWidth(300)
+        body = QWidget(); columns = QVBoxLayout(body)
         self.body = body
-        scroll.setWidget(body); root.addWidget(scroll)
+        scroll.setWidget(body); split.addWidget(scroll); split.setSizes([660, 400])
         left = QGroupBox('Khung hình'); lf = QFormLayout(left)
         right = QGroupBox('Màu sắc & hiệu ứng'); rf = QFormLayout(right)
         columns.addWidget(left); columns.addWidget(right)
@@ -45,7 +64,8 @@ class EffectsDialog(QDialog):
             button = QPushButton(self.values[key])
             def pick():
                 c = QColorDialog.getColor(QColor(button.text()), self)
-                if c.isValid(): button.setText(c.name())
+                if c.isValid():
+                    button.setText(c.name()); self.control_changed()
             button.clicked.connect(pick); form.addRow(label, button)
             self.controls[key] = button
         size = combo(lf, 'size', 'Kích thước xuất', [
@@ -87,7 +107,13 @@ class EffectsDialog(QDialog):
             self.controls['background'].setEnabled(mode == 'fit')
             self.controls['border'].setEnabled(mode == 'frame')
         size.currentIndexChanged.connect(update); layout.currentIndexChanged.connect(update); update()
-        self.enabled.toggled.connect(body.setEnabled); body.setEnabled(self.enabled.isChecked())
+        # Keep inputs usable even when effects are off. Editing opts in.
+        self.enabled.toggled.connect(self.refresh_canvas)
+        self.canvas.edited.connect(self.direct_edit)
+        for widget in self.controls.values():
+            if isinstance(widget, QComboBox): widget.currentIndexChanged.connect(self.control_changed)
+            elif isinstance(widget, QCheckBox): widget.toggled.connect(self.control_changed)
+            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)): widget.valueChanged.connect(self.control_changed)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText('Áp dụng')
         buttons.button(QDialogButtonBox.Cancel).setText('Hủy')
@@ -96,6 +122,7 @@ class EffectsDialog(QDialog):
         buttons.accepted.connect(lambda: self.apply(False)); buttons.rejected.connect(self.reject)
         reset = buttons.addButton('Đặt lại', QDialogButtonBox.ResetRole)
         def reset_values():
+            self._loading = True
             defaults = settings({})
             self.enabled.setChecked(False)
             for key, widget in self.controls.items():
@@ -104,16 +131,42 @@ class EffectsDialog(QDialog):
                 elif isinstance(widget, QCheckBox): widget.setChecked(value)
                 elif isinstance(widget, QPushButton): widget.setText(value)
                 else: widget.setValue(value)
+            self._loading = False
+            self.refresh_canvas()
         reset.clicked.connect(reset_values)
         root.addWidget(buttons)
+        self._loading = False
+        self.refresh_canvas()
 
-    def apply(self, preview):
+    def collect_values(self):
         result = dict(enabled=self.enabled.isChecked())
         for key, widget in self.controls.items():
             if isinstance(widget, QComboBox): result[key] = widget.currentData()
             elif isinstance(widget, QCheckBox): result[key] = widget.isChecked()
             elif isinstance(widget, QPushButton): result[key] = widget.text()
             else: result[key] = widget.value()
+        return result
+
+    def refresh_canvas(self, *args):
+        self.canvas.set_values(self.collect_values())
+        self.state_label.setText('Đang bật · Các thay đổi sẽ áp dụng khi xuất.' if self.enabled.isChecked()
+                                else 'Đang tắt · Chỉnh hình hoặc thay đổi thông số để tự bật.')
+
+    def control_changed(self, *args):
+        if self._loading: return
+        self.enabled.setChecked(True)
+        self.refresh_canvas()
+
+    def direct_edit(self, x, y, zoom):
+        self._loading = True
+        for key, value in [('x', x), ('y', y), ('zoom', zoom)]:
+            self.controls[key].setValue(value)
+        self._loading = False
+        self.enabled.setChecked(True)
+        self.refresh_canvas()
+
+    def apply(self, preview):
+        result = self.collect_values()
         try: self.values = settings(result)
         except ValueError as e:
             QMessageBox.warning(self, 'Thiết lập chưa hợp lệ', str(e)); return
