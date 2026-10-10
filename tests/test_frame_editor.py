@@ -58,6 +58,35 @@ class DirectFrameTests(unittest.TestCase):
         QTest.mouseDClick(canvas, Qt.LeftButton, pos=center.toPoint())
         self.assertEqual(d.controls['x'].value(), 50)
 
+    def test_full_export_action_is_distinct_from_sample(self):
+        self.dialog.controls['zoom'].setValue(1.15)
+        self.dialog.export_full()
+        self.assertEqual(self.dialog.result(), QDialog.Accepted)
+        self.assertTrue(self.dialog.full_export_requested)
+        self.assertFalse(self.dialog.preview_requested)
+        self.assertEqual(self.dialog.values['zoom'], 1.15)
+
+    def test_full_export_ignores_timeline_selection_and_needs_no_saved_project(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from studio.core import Project
+        from studio.ui import Window, QMessageBox
+        project=Project(video='/tmp/source.mp4',duration=120,has_audio=True)
+        project.video_effects=dict(enabled=True,zoom=1.15)
+        fake=SimpleNamespace(p=project,cache='/tmp/cache',editor_dirty=False,
+            selection=(5,15),guard=lambda:True,show_full_result=Mock(),export_done=Mock())
+        fake.start_job=lambda work,done,label:work(None,lambda *a:None)
+        with patch('studio.ui.check_project'), patch('studio.ui.QFileDialog.getSaveFileName',
+                return_value=('/tmp/full.mp4','')), patch('studio.ui.export_video') as render:
+            Window.export(fake,voice_choice=QMessageBox.No,preserve_original=True,show_result=True)
+        args,kwargs=render.call_args
+        self.assertIsNone(kwargs['preview'])
+        self.assertIsNone(kwargs['segment'])
+        self.assertEqual(args[0].duration,120)
+        self.assertEqual(args[0].video_effects['zoom'],1.15)
+        self.assertEqual(args[0].original_volume,1)
+        self.assertEqual(project.original_volume,.12)
+
     def test_cancel_preserves_input(self):
         original = dict(enabled=False, zoom=1.0)
         d = EffectsDialog(None, original)

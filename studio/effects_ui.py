@@ -18,6 +18,7 @@ class EffectsDialog(QDialog):
         self.values = settings(value)
         self.controls = {}
         self.preview_requested = False
+        self.full_export_requested = False
         root = QVBoxLayout(self)
         self.enabled = QCheckBox('Bật tùy chỉnh khung hình và hiệu ứng khi xuất')
         self.enabled.setChecked(self.values['enabled'])
@@ -115,8 +116,12 @@ class EffectsDialog(QDialog):
             elif isinstance(widget, QCheckBox): widget.toggled.connect(self.control_changed)
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)): widget.valueChanged.connect(self.control_changed)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Save).setText('Áp dụng')
+        buttons.button(QDialogButtonBox.Save).setText('Lưu thiết lập')
         buttons.button(QDialogButtonBox.Cancel).setText('Hủy')
+        full = QPushButton('Áp dụng và xuất toàn bộ video')
+        full.setMinimumHeight(36)
+        full.clicked.connect(self.export_full)
+        root.addWidget(full)
         preview = buttons.addButton('Xem thử 10 giây', QDialogButtonBox.ActionRole)
         preview.clicked.connect(lambda: self.apply(True))
         buttons.accepted.connect(lambda: self.apply(False)); buttons.rejected.connect(self.reject)
@@ -149,7 +154,7 @@ class EffectsDialog(QDialog):
 
     def refresh_canvas(self, *args):
         self.canvas.set_values(self.collect_values())
-        self.state_label.setText('Đang bật · Các thay đổi sẽ áp dụng khi xuất.' if self.enabled.isChecked()
+        self.state_label.setText('Đang bật · Bấm “Áp dụng và xuất toàn bộ video” để tạo bản hoàn chỉnh.' if self.enabled.isChecked()
                                 else 'Đang tắt · Chỉnh hình hoặc thay đổi thông số để tự bật.')
 
     def control_changed(self, *args):
@@ -164,6 +169,12 @@ class EffectsDialog(QDialog):
         self._loading = False
         self.enabled.setChecked(True)
         self.refresh_canvas()
+
+    def export_full(self):
+        self.full_export_requested = True
+        self.apply(False)
+        if self.result() != QDialog.Accepted:
+            self.full_export_requested = False
 
     def apply(self, preview):
         result = self.collect_values()

@@ -153,4 +153,10 @@ Vùng che xử lý trước khi đổi bố cục. Chữ thay thế trên hình 
 - Giữ chuột trái kéo hình để đổi bố cục. Với khung vừa khít ở zoom 100%, tăng zoom hoặc chọn tỷ lệ khác để có khoảng dịch hình.
 - Cuộn chuột trên ảnh hoặc kéo ô vuông ở góc ra/vào để zoom. Nhấp đúp trên ảnh để căn giữa. X/Y/Zoom cập nhật theo thao tác và dùng cho bản xuất.
 - Khung ảnh là bản xem bố cục tĩnh, có lật ngang và nền minh họa; màu, hiệu ứng, vùng che và phụ đề cần kiểm tra bằng **Xem thử 10 giây**.
-- **Áp dụng** lưu vào trạng thái dự án đang mở; **Hủy** bỏ các thao tác trong hộp thoại. Bỏ tích bật tùy chỉnh nếu muốn xuất lại hình gốc.
+- **Lưu thiết lập** lưu vào trạng thái dự án đang mở; **Hủy** bỏ các thao tác trong hộp thoại. Bỏ tích bật tùy chỉnh nếu muốn xuất lại hình gốc.
+
+### Áp dụng vào video hoàn chỉnh
+
+Sau khi chỉnh khung, bấm **Áp dụng & xuất toàn bộ video** ngay dưới khung chỉnh. Chọn giữ nguyên âm lượng video gốc, dùng âm lượng theo dự án, hoặc ghép voice Việt. Chọn nơi lưu MP4 mới; ứng dụng xuất từ đầu đến cuối với khung, màu và hiệu ứng đã chọn, không phụ thuộc vị trí con trỏ hoặc vùng timeline. Không cần có SRT hay voice nếu chọn âm gốc, và không bắt buộc lưu tệp dự án trước khi xuất.
+
+Xuất xong, bản hoàn chỉnh được mở trong cửa sổ phát của ứng dụng, có thanh tua và nút phát/tạm dừng. Bấm **Về chỉnh sửa** để trở lại dự án gốc. Video nguồn không bị ghi đè và hiệu ứng không bị áp dụng hai lần lên bản đã xuất. **Lưu thiết lập** chỉ lưu thay đổi vào trạng thái dự án đang mở, không dựng lại video; **Xem thử 10 giây** chỉ tạo đoạn thử. Dùng **Lưu dự án** nếu muốn giữ thiết lập cho lần mở sau.

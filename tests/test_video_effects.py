@@ -41,6 +41,26 @@ class EffectSettingsTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg required')
 class RenderTests(unittest.TestCase):
+    def test_full_export_is_not_limited_to_ten_seconds(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);src=root/'long.mp4'
+            subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i',
+                'testsrc2=size=160x90:rate=10:duration=14','-f','lavfi','-i',
+                'sine=frequency=440:duration=14','-c:v','libx264','-threads','1',
+                '-c:a','aac',str(src)],check=True)
+            p=Project(video=str(src),width=160,height=90,duration=14,has_audio=True)
+            p.video_effects=dict(enabled=True,size='custom',width=90,height=160,
+                                 zoom=1.15,layout='blur',effect='dust')
+            out=root/'complete.mp4'
+            export_video(p,root/'cache',out,threading.Event(),lambda *a:None,
+                         with_voice=False,preview=None,segment=None)
+            info=json.loads(subprocess.check_output(['ffprobe','-v','error',
+                '-show_streams','-show_format','-of','json',str(out)]))
+            self.assertAlmostEqual(float(info['format']['duration']),14,delta=.2)
+            video=next(x for x in info['streams'] if x['codec_type']=='video')
+            self.assertEqual((video['width'],video['height']),(90,160))
+            self.assertTrue(any(x['codec_type']=='audio' for x in info['streams']))
+
     def test_export_layouts_effects_audio_and_preview(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

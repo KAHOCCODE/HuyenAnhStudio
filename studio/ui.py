@@ -12,6 +12,7 @@ from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QVideoSink,QMediaDevi
 
 from .core import *
 from .effects_ui import EffectsDialog
+from .result_player import ResultPlayer
 
 VOICES={'Nam Minh · Nam':'vi-VN-NamMinhNeural','Hoài My · Nữ':'vi-VN-HoaiMyNeural'}
 
@@ -607,7 +608,20 @@ class Window(QMainWindow):
         dialog=EffectsDialog(self,self.p.video_effects)
         if dialog.exec()!=QDialog.Accepted:return
         self.push_undo();self.p.video_effects=dialog.values;self.load_controls();self.changed(False)
-        if dialog.preview_requested:self.render_effects_sample()
+        if dialog.full_export_requested:self.export_effects_full()
+        elif dialog.preview_requested:self.render_effects_sample()
+    def export_effects_full(self):
+        if not self.guard():return
+        choices=['Giữ nguyên âm lượng video gốc', 'Dùng âm lượng gốc đã chỉnh trong dự án', 'Ghép voice Việt và âm gốc theo dự án']
+        mode,ok=QInputDialog.getItem(self,'Âm thanh bản hoàn chỉnh','Áp dụng khung cho toàn bộ video đang mở. Chọn âm thanh:',choices,0,False)
+        if not ok:return
+        self.export(voice_choice=QMessageBox.Yes if mode==choices[2] else QMessageBox.No,
+                    preserve_original=mode==choices[0],show_result=True)
+    def show_full_result(self,path):
+        self.status.setText('Đã xuất toàn bộ: '+Path(path).name);self.progress.setValue(100);self.log('Đã xuất toàn bộ: '+path)
+        dialog=ResultPlayer(path,self)
+        dialog.exec()
+        dialog.deleteLater()
     def render_effects_sample(self):
         if not self.guard():return
         if self.editor_dirty and not self.commit_editor():return
@@ -1546,26 +1560,30 @@ class Window(QMainWindow):
             row=result['sample'];self.rows[id]=row;self.model.refresh();self.timeline.update()
             src=row['path'];self.sample_player.setSource(QUrl.fromLocalFile(src));self.sample_player.setPlaybackRate(self.p.final_speed if self.preview_mode.currentIndex()==1 else 1);self.sample_player.play();self.status.setText(f'Nghe câu đã khớp ({row["factor"]:.2f}×)' if row['ok'] else f'Câu quá dài ({row["factor"]:.2f}×) — nghe đủ lời ở tốc độ giới hạn')
         self.start_job(lambda c,r:generate_voices(p,self.cache,c,r,id),done,'Tạo giọng câu đang chọn')
-    def export(self,checked=False,voice_choice=None):
+    def export(self,checked=False,voice_choice=None,preserve_original=False,show_result=False):
         if not self.guard():return
-        if not self.save():return
+        if self.editor_dirty and not self.commit_editor():return
         mode=voice_choice if voice_choice is not None else QMessageBox.question(self,'Xuất video','Xuất kèm voice tiếng Việt?\nCó: video + sub cứng + voice.\nKhông: video + sub cứng + âm gốc theo mức đã chọn.',QMessageBox.Yes|QMessageBox.No|QMessageBox.Cancel)
         if mode==QMessageBox.Cancel:return
         voice=mode==QMessageBox.Yes
         try:
             check_project(self.p)
             if voice and not voice_ready(self.p,self.cache):
-                if cached_voice_exists(self.p,self.cache):self.rebuild_existing(after=lambda:self.export(voice_choice=mode));return
+                if cached_voice_exists(self.p,self.cache):self.rebuild_existing(after=lambda:self.export(voice_choice=mode,preserve_original=preserve_original,show_result=show_result));return
                 raise ValueError('Chưa có voice. Chọn vùng và tạo voice trước.')
         except Exception as e:self.error(str(e));return
         if voice and not voice_complete(self.p,self.cache):
             m=load_manifest(self.cache)
             message=f'Bản voice hiện có: {len(m.get("rows",[]))} câu; {m.get("missing_count",0)} câu thiếu; {m.get("long_count",0)} câu tràn mốc.\nCâu dài có thể chồng lời; lời vượt hết video sẽ bị giới hạn theo độ dài video.\nXuất bản đang có để xem / chỉnh tiếp?'
             if QMessageBox.question(self,'Xuất bản voice đang có',message)!=QMessageBox.Yes:return
-        path,_=QFileDialog.getSaveFileName(self,'Xuất video MP4','Video-Viet.mp4','Video MP4 (*.mp4)',options=QFileDialog.DontConfirmOverwrite)
+        path,_=QFileDialog.getSaveFileName(self,'Xuất toàn bộ video MP4',str(Path(self.p.video).with_name(Path(self.p.video).stem+'-da-chinh.mp4')) if self.p.video else 'Video-Viet.mp4','Video MP4 (*.mp4)',options=QFileDialog.DontConfirmOverwrite)
         if not path:return
         if not path.lower().endswith('.mp4'):path+='.mp4'
-        p=copy.deepcopy(self.p);self.start_job(lambda c,r:export_video(p,self.cache,path,c,r,voice,allow_partial=True),self.export_done,'Xuất video hoàn chỉnh')
+        p=copy.deepcopy(self.p)
+        if preserve_original:p.original_volume=1.0;p.music_clean={}
+        cache=self.cache
+        self.start_job(lambda c,r:export_video(p,cache,path,c,r,voice,allow_partial=True,preview=None,segment=None),
+                       self.show_full_result if show_result else self.export_done,'Xuất toàn bộ video · '+stamp(p.output_duration))
     def render_sample(self):
         if not self.guard():return
         if self.editor_dirty and not self.commit_editor():return
