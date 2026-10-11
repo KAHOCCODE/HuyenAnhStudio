@@ -44,6 +44,9 @@ def settings(value):
 
 
 def output_size(p):
+    # Internal low-resolution render size; never stored in project settings.
+    if getattr(p, '_preview_size', None):
+        return p._preview_size
     v = settings(p.video_effects)
     if not v['enabled'] or v['size'] == 'source':
         return math.ceil(p.width / 2) * 2, math.ceil(p.height / 2) * 2
@@ -62,8 +65,10 @@ def picture_filter(p, source, target='[picture]'):
     if z != 1:
         chain.append(f"crop=w='max(2,trunc(iw/{z}/2)*2)':h='max(2,trunc(ih/{z}/2)*2)':x='(iw-ow)*{x}':y='(ih-oh)*{y}'")
     t = v['temperature'] * .12
-    chain += [f"eq=saturation={v['saturation']}:contrast={v['contrast']}:brightness={v['brightness']}",
-              f'colorbalance=rs={t}:bs={-t}:rm={t/2}:bm={-t/2}', 'setsar=1']
+    if (v['saturation'],v['contrast'],v['brightness']) != (1,1,0):
+        chain.append(f"eq=saturation={v['saturation']}:contrast={v['contrast']}:brightness={v['brightness']}")
+    if t:chain.append(f'colorbalance=rs={t}:bs={-t}:rm={t/2}:bm={-t/2}')
+    chain.append('setsar=1')
     parts.append(source + ','.join(chain) + '[graded]')
     layout = v['layout']
     if layout == 'crop':
@@ -74,7 +79,9 @@ def picture_filter(p, source, target='[picture]'):
         fw = max(2, int(w * (1 - 2*v['inset']/100)) // 2 * 2)
         fh = max(2, int(h * (1 - 2*v['inset']/100)) // 2 * 2)
         parts.append('[graded]split[bgsrc][fgsrc]')
-        parts.append(f"[bgsrc]scale={w}:{h}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={w}:{h},gblur=sigma={v['blur']},eq=brightness=-0.12[bg]")
+        ratio=min(1,480/w,480/h)
+        bw=max(2,int(w*ratio)//2*2);bh=max(2,int(h*ratio)//2*2)
+        parts.append(f"[bgsrc]scale={bw}:{bh}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={bw}:{bh},gblur=sigma={max(.1,v['blur']*ratio)},eq=brightness=-0.12,scale={w}:{h}[bg]")
         parts.append(f'[fgsrc]scale={fw}:{fh}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg]')
         parts.append(f'[bg][fg]overlay=x=(W-w)*{x}:y=(H-h)*{y}[composed]')
         if layout == 'frame':
@@ -95,7 +102,7 @@ def picture_filter(p, source, target='[picture]'):
             expr = '255*max(0,1-hypot(X-64,Y-64)/64)'
         parts.append('[canvas]split[clean][texture_source]')
         parts.append(f"[texture_source]scale={size}:{size},geq=lum='{expr}':cb=128:cr=128,format=yuv420p,scroll=horizontal=0.013:vertical=0.007,scale={w}:{h}[texture]")
-        parts.append(f"[clean][texture]blend=c0_expr='min(255,A+B*{a})':c1_expr=A:c2_expr=A:shortest=1{target}")
+        parts.append(f"[clean][texture]blend=c0_mode=addition:c0_opacity={a}:c1_mode=normal:c2_mode=normal:shortest=1{target}")
     else:
         parts.append('[canvas]null' + target)
     # Scaling to even dimensions may introduce a non-square sample aspect ratio.

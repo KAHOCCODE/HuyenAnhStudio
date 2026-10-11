@@ -141,19 +141,25 @@ Trong **03 THIẾT LẬP**, mở **Khung hình & màu sắc…**. Các ô nhập
 - **Màu sắc:** chỉnh độ bão hòa, tương phản, độ sáng và tông lạnh/ấm. Giá trị trung tính lần lượt là 1, 1, 0, 0.
 - **Lớp phủ:** sương sáng nhẹ, bụi sáng chuyển động hoặc ánh sáng chuyển động. Cường độ từ 0 đến 0,3; đặt 0 để bỏ tác động.
 
-Bấm **Xem thử 10 giây** để áp dụng thiết lập và xuất đoạn thử từ vị trí đang xem. Đoạn thử có voice nếu voice đã ghép còn khớp với dự án; nếu chưa có, dùng âm gốc theo mức âm lượng đã chọn. Khung dựng chính vẫn hiển thị hình gốc để đặt vùng che chính xác; hiệu ứng khung hình được xem trong video xuất thử và bản xuất cuối.
+Bấm **Xem thử 10 giây** để áp dụng thiết lập và xuất đoạn thử từ vị trí đang xem. Đoạn thử có voice nếu voice đã ghép còn khớp với dự án; nếu chưa có, dùng âm gốc theo mức âm lượng đã chọn. Preview chính cũng hiển thị thay đổi khung hình, màu và hiệu ứng khi phát hoặc dừng video. Khi bật chế độ đặt vùng che/chọn vùng chữ, preview tạm trở về hình nguồn để đặt tọa độ chính xác; tắt chế độ đó để xem lại hiệu ứng.
 
-Các thiết lập được lưu cùng dự án và có thể hoàn tác. **Đặt lại** đưa về mặc định, **Hủy** bỏ chỉnh sửa trong hộp thoại. Tắt tùy chỉnh để dùng lại luồng xuất gốc. Có thể xuất video chỉ chỉnh hình mà không cần SRT; chọn **Không** khi được hỏi xuất kèm voice.
+Các thiết lập được lưu cùng dự án và có thể hoàn tác. Thay đổi tự áp dụng vào dự án đang mở; **Đặt lại** đưa về mặc định, **Đóng** chỉ đóng bảng chỉnh. Dùng hoàn tác nếu cần bỏ thay đổi. Tắt tùy chỉnh để dùng lại luồng xuất gốc. Có thể xuất video chỉ chỉnh hình mà không cần SRT; chọn **Không** khi được hỏi xuất kèm voice.
 
 Vùng che xử lý trước khi đổi bố cục. Chữ thay thế trên hình đi theo nội dung nên có thể bị cắt nếu nằm ngoài vùng crop. Phụ đề SRT được vẽ sau khi đổi khung và chỉnh màu, theo vị trí phần trăm của khung xuất, nên không bị lật hay crop theo video nguồn.
 
-### Chỉnh trực tiếp trên khung ảnh
+### Chỉnh trực tiếp trên video
 
-- Dừng video ở hình cần chỉnh rồi mở **Khung hình & màu sắc…**. Bên trái là ảnh tại vị trí đó; bên phải là các thiết lập có thanh cuộn.
-- Giữ chuột trái kéo hình để đổi bố cục. Với khung vừa khít ở zoom 100%, tăng zoom hoặc chọn tỷ lệ khác để có khoảng dịch hình.
-- Cuộn chuột trên ảnh hoặc kéo ô vuông ở góc ra/vào để zoom. Nhấp đúp trên ảnh để căn giữa. X/Y/Zoom cập nhật theo thao tác và dùng cho bản xuất.
-- Khung ảnh là bản xem bố cục tĩnh, có lật ngang và nền minh họa; màu, hiệu ứng, vùng che và phụ đề cần kiểm tra bằng **Xem thử 10 giây**.
-- **Lưu thiết lập** lưu vào trạng thái dự án đang mở; **Hủy** bỏ các thao tác trong hộp thoại. Bỏ tích bật tùy chỉnh nếu muốn xuất lại hình gốc.
+- Mở **Khung hình & màu sắc…** để hiện bảng chỉnh bên phải, nằm trong cửa sổ app.
+- Giữ chuột trái kéo ngay trên preview chính để đổi bố cục. Với khung vừa khít ở zoom 100%, tăng zoom hoặc chọn tỷ lệ khác để có khoảng dịch hình.
+- Cuộn chuột trên preview để zoom. X/Y/Zoom cập nhật theo thao tác và dùng cho bản xuất.
+- Preview cập nhật sau một nhịp xử lý ngắn, cả khi video đang dừng. Bản xem được dựng ở độ phân giải tối đa 960×540 để giảm tải; bản xuất vẫn dùng kích thước đã chọn. Không cần xuất thử 10 giây chỉ để thấy thay đổi.
+- **Lưu thiết lập** áp dụng vào trạng thái dự án đang mở. **Đóng** giữ thay đổi; dùng **Lưu dự án** để giữ cho lần mở sau. Bỏ tích bật tùy chỉnh để trở lại hình gốc.
+
+### Ba mức xuất và tốc độ xử lý
+
+Bảng chỉnh dùng chung lựa chọn tốc độ xuất của app: `ultrafast` (nhanh nhất), `veryfast` và `medium`. Mức nhanh hơn thường tạo tệp lớn hơn. Cả ba mức đều áp dụng khi xuất video đã đổi khung. Xuất thử 10 giây dùng `ultrafast`.
+
+Bộ giải mã preview tạm dừng trong lúc xuất để tránh tranh tài nguyên. Nền mờ được xử lý ở kích thước nhỏ rồi phóng lên; các bước chỉnh màu trung tính được bỏ qua. Thời gian xuất vẫn phụ thuộc độ dài, độ phân giải, hiệu ứng và CPU; chọn mức nhanh nhất nếu ưu tiên thời gian.
 
 ### Áp dụng vào video hoàn chỉnh
 

@@ -31,8 +31,10 @@ class ElidedLabel(QLabel):
 
 class CPUFrames:
     """Bounded, cancellable decoder. No encoded proxy and no frame signals accumulating in Qt."""
-    def __init__(self, path, codec, width, height, start, origin=0):
+    def __init__(self, path, codec, width, height, start, origin=0, project=None):
         import queue
+        self.project=copy.deepcopy(project)
+        if project:width,height=output_size(project)
         self.frames=queue.Queue(maxsize=8);self.cancel=threading.Event()
         self.proc=None;self.error='';self.done=False;self.start_time=start;self.origin=origin
         scale=min(1,960/max(1,width),540/max(1,height))
@@ -41,15 +43,29 @@ class CPUFrames:
         self.thread.start()
     def decode(self,path,codec,start):
         import queue,tempfile
+        job=None
         try:
             args=[binary('ffmpeg'),'-hide_banner','-loglevel','error','-nostdin']+software_decode_args(codec)
-            args+=['-ss',f'{start:.6f}','-i',path,'-map','0:v:0','-an','-sn','-dn',
-                   '-vf',f'setpts=PTS-STARTPTS,fps=30,scale={self.width}:{self.height}:flags=fast_bilinear',
-                   '-pix_fmt','rgb24','-f','rawvideo','pipe:1']
+            args+=['-ss',f'{start:.6f}','-i',path]
+            if self.project:
+                job=tempfile.TemporaryDirectory(prefix='huyenanh-preview-')
+                p=copy.deepcopy(self.project);p.work_speed=p.final_speed=1
+                factor=min(1,960/p.width,540/p.height)
+                p.width=max(2,int(p.width*factor)//2*2);p.height=max(2,int(p.height*factor)//2*2)
+                p._preview_size=(self.width,self.height)
+                write_ass(Path(job.name)/'subtitles.ass',p,regions=False,canvas=(self.width,self.height))
+                write_ass(Path(job.name)/'regions.ass',p,cues=False,mirror_regions=effect_settings(p.video_effects)['flip'])
+                graph=f'[0:v]scale={p.width}:{p.height},setpts=PTS+{start:.6f}/TB[live_source];'+video_filter(p).replace('[0:v]','[live_source]')
+                graph+=';[v]fps=30[live]'
+                (Path(job.name)/'live.txt').write_text(graph,encoding='utf-8')
+                args+=['-filter_complex_script','live.txt','-map','[live]']
+            else:
+                args+=['-map','0:v:0','-vf',f'setpts=PTS-STARTPTS,fps=30,scale={self.width}:{self.height}:flags=fast_bilinear']
+            args+=['-an','-sn','-dn','-pix_fmt','rgb24','-f','rawvideo','pipe:1']
             if self.cancel.is_set():return
             with tempfile.TemporaryFile() as errors:
                 self.proc=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=errors,stdin=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                    creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),cwd=job.name if job else None)
                 if self.cancel.is_set():self.proc.kill()
                 length=self.width*self.height*3;index=0
                 while not self.cancel.is_set():
@@ -74,6 +90,7 @@ class CPUFrames:
             if self.proc:
                 if self.proc.poll() is None:self.proc.kill();self.proc.wait()
                 if self.proc.stdout:self.proc.stdout.close()
+            if job:job.cleanup()
             self.done=True
     def close(self):
         self.cancel.set()
@@ -208,11 +225,32 @@ class Preview(QGraphicsView):
         image=frame if isinstance(frame,QImage) else frame.toImage()
         if image.isNull():return False
         # Paint decoded CPU pixels in a regular QWidget, avoiding a separate GPU video surface.
+        decoder=getattr(self.win,'cpu_decoder',None)
+        filtered=bool(decoder and decoder.project)
+        w,h=output_size(self.win.p) if filtered else (self.win.p.width,self.win.p.height)
         self.video.setPixmap(QPixmap.fromImage(image))
-        self.video.setTransform(QTransform.fromScale(self.win.p.width/image.width(),self.win.p.height/image.height()))
-        self.overlay.frame=image;self.overlay.update()
+        self.video.setTransform(QTransform.fromScale(w/image.width(),h/image.height()))
+        if self.sceneRect()!=QRectF(0,0,w,h):
+            self.setSceneRect(0,0,w,h);self.fitInView(self.sceneRect(),Qt.KeepAspectRatio)
+        self.overlay.setVisible(not filtered)
+        if not filtered:self.overlay.frame=image
+        self.overlay.update()
         return True
+    def wheelEvent(self,event):
+        panel=getattr(self.win,'effects_panel',None)
+        dock=getattr(self.win,'effects_dock',None)
+        if panel and dock.isVisible() and not self.win.busy:
+            v=effect_settings(self.win.p.video_effects)
+            panel.direct_edit(v['x'],v['y'],max(1,min(3,v['zoom']+event.angleDelta().y()/120*.05)))
+            event.accept();return
+        super().wheelEvent(event)
     def mousePressEvent(self,event):
+        panel=getattr(self.win,'effects_panel',None);dock=getattr(self.win,'effects_dock',None)
+        if panel and dock.isVisible() and not self.win.busy and event.button()==Qt.LeftButton and not self.win.mask_edit.isChecked() and not self.win.region_select.isChecked():
+            panel.canvas.source_size=(self.win.p.width,self.win.p.height)
+            panel.canvas.resize(self.viewport().size());panel.canvas.set_values(effect_settings(self.win.p.video_effects))
+            self.frame_drag=(event.position(),effect_settings(self.win.p.video_effects),panel.canvas.geometry_data()[3])
+            event.accept();return
         if getattr(self.win,'region_select',None) and self.win.region_select.isChecked() and event.button()==Qt.LeftButton:
             if self.win.busy or self.overlay.frame.isNull():return
             pos=self.mapToScene(event.position().toPoint())
@@ -220,10 +258,18 @@ class Preview(QGraphicsView):
             self.pick_origin=pos;self.pick_box.setRect(QRectF(pos,pos));self.pick_box.show();event.accept();return
         super().mousePressEvent(event)
     def mouseMoveEvent(self,event):
+        drag=getattr(self,'frame_drag',None)
+        if drag:
+            point,v,motion=drag;delta=event.position()-point
+            x=v['x']+delta.x()/motion[0]*100 if abs(motion[0])>.5 else v['x']
+            y=v['y']+delta.y()/motion[1]*100 if abs(motion[1])>.5 else v['y']
+            self.win.effects_panel.direct_edit(max(0,min(100,x)),max(0,min(100,y)),v['zoom'])
+            event.accept();return
         if self.pick_origin is not None:
             rect=QRectF(self.pick_origin,self.mapToScene(event.position().toPoint())).normalized().intersected(self.sceneRect());self.pick_box.setRect(rect);event.accept();return
         super().mouseMoveEvent(event)
     def mouseReleaseEvent(self,event):
+        if getattr(self,'frame_drag',None):self.frame_drag=None;event.accept();return
         if self.pick_origin is not None:
             rect=self.pick_box.rect();self.pick_origin=None;self.pick_box.hide();self.win.region_select.setChecked(False)
             if rect.width()>4 and rect.height()>4:QTimer.singleShot(0,lambda r=QRectF(rect):self.win.new_screen_region(r))
@@ -515,7 +561,7 @@ class Window(QMainWindow):
         self.tx=self.spin(0,100,50,1,self.visual_changed);self.ty=self.spin(0,100,88,1,self.visual_changed);self.tw=self.spin(20,100,88,1,self.visual_changed)
         form.addRow('Vị trí X (%)',self.tx);form.addRow('Vị trí Y (%)',self.ty);form.addRow('Rộng chữ (%)',self.tw);pr.addWidget(stylebox)
         maskbox=QGroupBox('Che phụ đề tiếng Trung');mf=QFormLayout(maskbox)
-        self.mask_on=QCheckBox('Bật vùng che');self.mask_on.toggled.connect(self.visual_changed);mf.addRow(self.mask_on);self.mask_mode=QComboBox();self.mask_mode.addItems(['Làm mờ vùng chọn','Phủ màu']);self.mask_mode.currentIndexChanged.connect(self.visual_changed);mf.addRow('Cách che',self.mask_mode);mf.addRow(self.mask_edit);self.mask_edit.toggled.connect(lambda:self.preview.overlay.update())
+        self.mask_on=QCheckBox('Bật vùng che');self.mask_on.toggled.connect(self.visual_changed);mf.addRow(self.mask_on);self.mask_mode=QComboBox();self.mask_mode.addItems(['Làm mờ vùng chọn','Phủ màu']);self.mask_mode.currentIndexChanged.connect(self.visual_changed);mf.addRow('Cách che',self.mask_mode);mf.addRow(self.mask_edit);self.mask_edit.toggled.connect(lambda:self.preview.overlay.update());self.mask_edit.toggled.connect(self.refresh_effect_preview);self.region_select.toggled.connect(self.refresh_effect_preview)
         self.mx=self.spin(0,99,8,1,self.visual_changed);self.my=self.spin(0,99,80,1,self.visual_changed);self.mw=self.spin(1,100,84,1,self.visual_changed);self.mh=self.spin(1,100,14,1,self.visual_changed)
         for label,w in [('X (%)',self.mx),('Y (%)',self.my),('Rộng (%)',self.mw),('Cao (%)',self.mh)]:mf.addRow(label,w)
         self.opacity=self.spin(.1,1,1,2,self.visual_changed);mf.addRow('Độ đậm phủ màu',self.opacity);mf.addRow(self.button('Màu vùng che',self.pick_mask_color));pr.addWidget(maskbox)
@@ -591,6 +637,7 @@ class Window(QMainWindow):
         name=Path(self.p.video).name if self.p.video else 'Chưa chọn video'
         self.media_label.setText(name);self.media_label.setToolTip(self.p.video or name)
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
+        self.refresh_effect_preview()
         self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.2.11'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
@@ -603,13 +650,44 @@ class Window(QMainWindow):
         w,h=output_size(p)
         self.effects_summary.setText(f'Khung xuất: {w} × {h} · Zoom {effects["zoom"]*100:.0f}%' if effects['enabled'] else 'Khung xuất: giữ nguyên video gốc')
         self.syncing=False
+        panel=getattr(self,'effects_panel',None)
+        if panel and isValid(panel):panel.load_values(p.video_effects)
+        speed=getattr(self,'effects_speed',None)
+        if speed and isValid(speed):
+            speed.blockSignals(True);speed.setCurrentIndex(speed.findData(p.export_preset));speed.blockSignals(False)
+        self.refresh_effect_preview()
     def video_effects_dialog(self):
         if not self.guard():return
-        dialog=EffectsDialog(self,self.p.video_effects)
-        if dialog.exec()!=QDialog.Accepted:return
-        self.push_undo();self.p.video_effects=dialog.values;self.load_controls();self.changed(False)
-        if dialog.full_export_requested:self.export_effects_full()
-        elif dialog.preview_requested:self.render_effects_sample()
+        old=getattr(self,'effects_dock',None)
+        if old:old.hide();old.deleteLater()
+        dock=QDockWidget('Khung hình & màu sắc · Preview trực tiếp',self)
+        dock.setFeatures(QDockWidget.DockWidgetClosable)
+        panel=EffectsDialog(self,self.p.video_effects,embedded=True)
+        speed=QComboBox();self.effects_speed=speed
+        for label,value in [('Nhanh nhất · tệp lớn','ultrafast'),('Nhanh · cân bằng','veryfast'),('Nén gọn · chậm','medium')]:speed.addItem(label,value)
+        speed.setCurrentIndex(speed.findData(self.p.export_preset))
+        speed.currentIndexChanged.connect(lambda:self.export_mode.setCurrentIndex(self.export_mode.findData(speed.currentData())))
+        panel.layout().insertWidget(1,QLabel('Tốc độ xuất video'))
+        panel.layout().insertWidget(2,speed)
+        dock.setWidget(panel);self.addDockWidget(Qt.RightDockWidgetArea,dock)
+        self.effects_dock=dock;self.effects_panel=panel
+        panel.settingsChanged.connect(self.apply_live_effects)
+        panel.exportRequested.connect(self.export_effects_full)
+        panel.sampleRequested.connect(self.render_effects_sample)
+        panel.rejected.connect(dock.hide)
+        self.split.widget(2).hide()
+        dock.visibilityChanged.connect(lambda visible:self.split.widget(2).setVisible(not visible))
+        dock.show();self.refresh_effect_preview()
+    def apply_live_effects(self,values):
+        if self.busy:return
+        if values==effect_settings(self.p.video_effects):return
+        self.push_undo();self.p.video_effects=values;self.load_controls();self.changed(False)
+        self.refresh_effect_preview()
+    def refresh_effect_preview(self,*args):
+        if not hasattr(self,'cpu_seek_timer') or not self.p.video or self.busy:return
+        enabled=effect_settings(self.p.video_effects)['enabled']
+        if enabled and not self.cpu_mode:self.switch_cpu()
+        elif self.cpu_mode:self.cpu_seek(self.source_position()/1000)
     def export_effects_full(self):
         if not self.guard():return
         choices=['Giữ nguyên âm lượng video gốc', 'Dùng âm lượng gốc đã chỉnh trong dự án', 'Ghép voice Việt và âm gốc theo dự án']
@@ -635,6 +713,9 @@ class Window(QMainWindow):
         if self.syncing:return
         if self.busy:self.load_controls();return
         self.p.export_preset=self.export_mode.currentData();self.dirty=True
+        speed=getattr(self,'effects_speed',None)
+        if speed and isValid(speed):
+            speed.blockSignals(True);speed.setCurrentIndex(speed.findData(self.p.export_preset));speed.blockSignals(False)
     def pull_visual_controls(self):
         self.syncing=True
         for widget,key in [(self.tx,'x'),(self.ty,'y')]:widget.setValue(self.p.style[key])
@@ -646,7 +727,7 @@ class Window(QMainWindow):
         self.push_undo();p=self.p
         p.style.update(font=self.font_picker.currentFont().family(),size=self.font_size.value(),bold=self.bold.isChecked(),box=self.box.isChecked(),outline=self.outline.value(),shadow=self.shadow.value(),x=self.tx.value(),y=self.ty.value(),width=self.tw.value())
         p.mask.update(enabled=self.mask_on.isChecked(),mode='blur' if self.mask_mode.currentIndex()==0 else 'solid',x=self.mx.value(),y=self.my.value(),w=min(self.mw.value(),100-self.mx.value()),h=min(self.mh.value(),100-self.my.value()),opacity=self.opacity.value())
-        self.preview.overlay.update();self.dirty=True
+        self.preview.overlay.update();self.dirty=True;self.refresh_effect_preview()
     def pick_text_color(self):
         if not self.guard():return
         c=QColorDialog.getColor(QColor(self.p.style['color']),self)
@@ -830,7 +911,9 @@ class Window(QMainWindow):
             origin=self._preview_offset_ms/1000
             path=self.player.source().toLocalFile() if self._preview_end is not None else self.p.video
             codec='h264' if self._preview_end is not None else self.p.video_codec
-            self.cpu_decoder=CPUFrames(path,codec,self.p.width,self.p.height,max(0,self._cpu_seek_target-origin),origin)
+            filtered=effect_settings(self.p.video_effects)['enabled'] and not self.mask_edit.isChecked() and not self.region_select.isChecked()
+            if filtered:path=self.p.video;codec=self.p.video_codec;origin=0
+            self.cpu_decoder=CPUFrames(path,codec,self.p.width,self.p.height,max(0,self._cpu_seek_target-origin),origin,self.p if filtered else None)
     def preview_clock(self):
         # Speech is the visual clock whenever available: never seek speech to chase frames.
         if (getattr(self,'voice_is_ready',False) and not self.busy
@@ -1293,6 +1376,7 @@ class Window(QMainWindow):
     def start_job(self,fn,done,label):
         if not self.guard():return
         self.player.pause();self.voice_player.stop();self.voice_player.setSource(QUrl());self.sample_player.stop();self.busy=True;self.cancel_btn.setEnabled(True);self.progress.setValue(0);self.status.setText(label);self.log(label)
+        self.close_cpu()
         self.worker=Worker(fn);self.worker.progress.connect(self.job_progress)
         self.pending_result=None;self.pending_error=None
         self.worker.result.connect(lambda result:setattr(self,'pending_result',result));self.worker.failed.connect(lambda error:setattr(self,'pending_error',error))
@@ -1300,6 +1384,7 @@ class Window(QMainWindow):
         def finished():
             self.worker=None
             self.busy=False;self.cancel_btn.setEnabled(False)
+            self.refresh_effect_preview()
             if self.pending_error:self.status.setText('Đã dừng / có lỗi');self.error(self.pending_error)
             else:
                 try:done(self.pending_result)

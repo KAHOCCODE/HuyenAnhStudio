@@ -1,5 +1,5 @@
 """Video composition dialog; the editor keeps source coordinates for masking."""
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QGroupBox, QComboBox, QCheckBox, QDoubleSpinBox, QSpinBox, QPushButton,
     QLabel, QColorDialog, QDialogButtonBox, QMessageBox, QScrollArea, QWidget, QSplitter)
@@ -9,8 +9,14 @@ from .frame_editor import FrameEditor
 
 
 class EffectsDialog(QDialog):
-    def __init__(self, parent, value):
+    settingsChanged = Signal(dict)
+    exportRequested = Signal()
+    sampleRequested = Signal()
+
+    def __init__(self, parent, value, embedded=False):
         super().__init__(parent)
+        self.embedded = embedded
+        if embedded:self.setWindowFlags(Qt.Widget)
         self.setWindowTitle('Khung hình & màu sắc')
         screen = self.screen().availableGeometry()
         self.resize(min(1120, screen.width()-40), min(720, screen.height()-80))
@@ -38,6 +44,7 @@ class EffectsDialog(QDialog):
         preview_note = QLabel('Khung này dùng ảnh tại vị trí đang xem để chỉnh bố cục. Nền mờ là minh họa nhanh; màu sắc, lớp phủ, phụ đề và chuyển động xem bằng “Xem thử 10 giây”.')
         preview_note.setWordWrap(True); visual_layout.addWidget(preview_note)
         split.addWidget(visual)
+        if embedded:visual.hide()
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
         scroll.setMinimumWidth(300)
         body = QWidget(); columns = QVBoxLayout(body)
@@ -100,6 +107,7 @@ class EffectsDialog(QDialog):
                                      ('Bụi sáng chuyển động', 'dust'), ('Ánh sáng chuyển động', 'light')])
         number(rf, 'opacity', 'Cường độ lớp phủ (0–0,3)', 0, .3, .01)
         note = QLabel('100% / X=50 / Y=50 là bố cục giữa. Zoom 110% và 115% cắt bớt mép ảnh.\n\nKhung chỉnh vùng che vẫn dùng hình gốc. Bấm “Xem thử 10 giây” để kiểm tra đúng khung hình, màu sắc và chuyển động sau khi xuất.'); note.setWordWrap(True); rf.addRow(note)
+        if embedded:note.setText('Thay đổi hiển thị trên preview chính sau một nhịp xử lý ngắn. Kéo hình để đổi bố cục, cuộn chuột để zoom. Bật Kéo vùng che để tạm xem nguồn gốc khi chỉnh vùng che.')
         def update():
             custom = size.currentData() == 'custom'
             width.setEnabled(custom); height.setEnabled(custom)
@@ -117,7 +125,7 @@ class EffectsDialog(QDialog):
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)): widget.valueChanged.connect(self.control_changed)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText('Lưu thiết lập')
-        buttons.button(QDialogButtonBox.Cancel).setText('Hủy')
+        buttons.button(QDialogButtonBox.Cancel).setText('Đóng' if embedded else 'Hủy')
         full = QPushButton('Áp dụng và xuất toàn bộ video')
         full.setMinimumHeight(36)
         full.clicked.connect(self.export_full)
@@ -143,6 +151,19 @@ class EffectsDialog(QDialog):
         self._loading = False
         self.refresh_canvas()
 
+    def load_values(self, value):
+        self._loading = True
+        values = settings(value)
+        self.enabled.setChecked(values['enabled'])
+        for key,widget in self.controls.items():
+            n=values[key]
+            if isinstance(widget,QComboBox):widget.setCurrentIndex(widget.findData(n))
+            elif isinstance(widget,QCheckBox):widget.setChecked(n)
+            elif isinstance(widget,QPushButton):widget.setText(n)
+            else:widget.setValue(n)
+        self.canvas.set_values(values)
+        self._loading = False
+
     def collect_values(self):
         result = dict(enabled=self.enabled.isChecked())
         for key, widget in self.controls.items():
@@ -153,7 +174,11 @@ class EffectsDialog(QDialog):
         return result
 
     def refresh_canvas(self, *args):
-        self.canvas.set_values(self.collect_values())
+        values = self.collect_values()
+        self.canvas.set_values(values)
+        if self.embedded and not self._loading:
+            try:self.settingsChanged.emit(settings(values))
+            except ValueError:pass
         self.state_label.setText('Đang bật · Bấm “Áp dụng và xuất toàn bộ video” để tạo bản hoàn chỉnh.' if self.enabled.isChecked()
                                 else 'Đang tắt · Chỉnh hình hoặc thay đổi thông số để tự bật.')
 
@@ -182,4 +207,8 @@ class EffectsDialog(QDialog):
         except ValueError as e:
             QMessageBox.warning(self, 'Thiết lập chưa hợp lệ', str(e)); return
         self.preview_requested = preview
-        self.accept()
+        if self.embedded:
+            self.settingsChanged.emit(self.values)
+            if self.full_export_requested:self.exportRequested.emit();self.full_export_requested=False
+            elif preview:self.sampleRequested.emit()
+        else:self.accept()
