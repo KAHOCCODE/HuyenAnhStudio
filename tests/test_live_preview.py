@@ -79,7 +79,7 @@ class LivePreviewTests(unittest.TestCase):
         p=self.project();p.video_effects=dict(enabled=True,zoom=1.15)
         for preset in ('ultrafast','veryfast','medium'):
             p.export_preset=preset
-            with patch('studio.core.run',wraps=core.run) as run:
+            with patch('studio.core.export_encoder',return_value=('CPU', ['-c:v','libx264','-preset',preset,'-crf','20'])), patch('studio.core.run',wraps=core.run) as run:
                 export_video(p,Path(self.tmp.name)/'cache',Path(self.tmp.name)/(preset+'.mp4'),
                              threading.Event(),lambda *a:None,with_voice=False)
             command=next(c.args[0] for c in run.call_args_list if '-preset' in c.args[0])
@@ -114,3 +114,20 @@ class LivePreviewTests(unittest.TestCase):
             streams=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams',
                                                         '-of','json',str(out)]))['streams']
             self.assertEqual(any(s['codec_type']=='audio' for s in streams),voice)
+
+    def test_gpu_startup_failure_retries_cpu(self):
+        from studio import core
+        actual_run=core.run
+        attempts=[]
+        def run_export(args,*a,**kw):
+            attempts.append(args)
+            if args[args.index('-c:v')+1]=='h264_nvenc':
+                raise RuntimeError('GPU initialization failed')
+            return actual_run(args,*a,**kw)
+        p=self.project();p.export_preset='ultrafast'
+        out=Path(self.tmp.name)/'gpu-fallback.mp4'
+        with patch('studio.core.export_encoder',return_value=('NVIDIA', ['-c:v','h264_nvenc'])), patch('studio.core.run',side_effect=run_export):
+            export_video(p,Path(self.tmp.name)/'cache',out,threading.Event(),lambda *a:None,with_voice=False)
+        self.assertEqual(len(attempts),2)
+        self.assertTrue(out.is_file())
+        self.assertFalse(out.with_name('gpu-fallback.partial.mp4').exists())

@@ -144,13 +144,13 @@ def binary(name):
     if not found: raise RuntimeError(f'Không tìm thấy {name}. Thêm FFmpeg vào PATH hoặc đặt ffmpeg.exe và ffprobe.exe vào thư mục tools.')
     return found
 
-def run(args,cancel=None,cwd=None,progress=None,total=0,capture=False):
+def run(args,cancel=None,cwd=None,progress=None,total=0,capture=False,timeout=None):
     """No shell. Drain output continuously; polling remains cancellable during silence."""
     import queue
     flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
     proc=subprocess.Popen([str(a) for a in args],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
         text=True,encoding='utf-8',errors='replace',cwd=cwd,creationflags=flags)
-    q=queue.Queue(); tail=[]
+    q=queue.Queue(); tail=[];started=time.monotonic()
     def read():
         for line in proc.stdout: q.put(line)
         q.put(None)
@@ -158,6 +158,7 @@ def run(args,cancel=None,cwd=None,progress=None,total=0,capture=False):
     try:
         while True:
             if cancel and cancel.is_set(): raise InterruptedError('Đã hủy. Dữ liệu đã tạo vẫn được giữ để tiếp tục.')
+            if timeout is not None and time.monotonic()-started>timeout:raise TimeoutError('Quá thời gian kiểm tra bộ mã hóa.')
             try: line=q.get(timeout=.1)
             except queue.Empty: continue
             if line is None: break
@@ -572,6 +573,29 @@ def check_project(p):
         validate_cue(c)
         if c.end>p.duration+.1: raise ValueError(f'Phụ đề {stamp(c.end)} vượt thời lượng video. Kiểm tra đúng video và SRT.')
 
+def export_encoder(p, preset, cancel, report):
+    """Exercise hardware at the requested size; an encoder listing alone is insufficient."""
+    cpu=['-c:v','libx264','-preset',preset,'-crf','20']
+    if preset!='ultrafast':return 'CPU · libx264',cpu
+    w,h=output_size(p)
+    candidates=[
+        ('NVIDIA NVENC',['-c:v','h264_nvenc','-preset','p1','-rc','vbr','-cq','20','-b:v','0']),
+        ('Intel Quick Sync',['-c:v','h264_qsv','-preset','veryfast','-global_quality','20']),
+        ('AMD AMF',['-c:v','h264_amf','-quality','speed','-rc','cqp','-qp_i','20','-qp_p','20']),
+    ]
+    for name,options in candidates:
+        report(0,'Kiểm tra mã hóa GPU · '+name)
+        try:
+            run([binary('ffmpeg'),'-v','error','-nostdin','-f','lavfi','-i',
+                 f'color=black:size={w}x{h}:rate=30','-frames:v','3','-an']+
+                options+['-pix_fmt','yuv420p','-f','null','-'],cancel,timeout=12)
+            return name,options
+        except (RuntimeError,TimeoutError) as e:
+            report(0,name+' chưa dùng được: '+str(e)[-350:])
+    report(0,'Không có GPU mã hóa khả dụng · dùng CPU ultrafast')
+    return 'CPU · libx264',cpu
+
+
 def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_partial=False,segment=None,review_voice=None):
     check_project(p)
     local_voice=(review_voice or batch_manifest(p,cache,segment)) if with_voice and segment is not None else {}
@@ -619,16 +643,31 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
     args+=['-filter_complex_script','filters.txt','-map','[v]']
     if audios: args+=['-map','[a]','-c:a','aac','-b:a','192k']
     else: args+=['-an']
-    args+=['-t',f'{duration:.6f}','-c:v','libx264','-preset','ultrafast' if preview is not None else p.export_preset,
-        '-crf','20','-pix_fmt','yuv420p','-movflags','+faststart','-progress','pipe:1','-nostats',str(partial)]
+    preset='ultrafast' if preview is not None else p.export_preset
+    tail=['-pix_fmt','yuv420p','-movflags','+faststart','-progress','pipe:1','-nostats',str(partial)]
+    args+=['-t',f'{duration:.6f}']
     try:
-        began=time.monotonic()
+        encoder,options=export_encoder(p,preset,cancel,report)
+        began=time.monotonic();last_percent=0
         def export_progress(percent):
+            nonlocal last_percent
+            last_percent=percent
             elapsed=time.monotonic()-began
+            speed=duration*percent/100/max(elapsed,.001)
             eta=elapsed*(100-percent)/percent if percent>0 else 0
-            report(percent,f'Xuất {percent:.1f}% · Đã chạy {stamp(elapsed)} · Còn khoảng {stamp(eta)}')
-        report(0,'Đang xuất video · '+p.export_preset)
-        run(args,cancel,cwd=job,progress=export_progress,total=duration)
+            remaining='Đang ước tính' if elapsed<15 or percent<=0 else 'Còn khoảng '+stamp(eta)
+            report(percent,f'{encoder} · Xuất {percent:.1f}% · {speed:.2f}× · Đã chạy {stamp(elapsed)} · {remaining}')
+        report(0,'Đang xuất video · '+encoder+' · '+preset)
+        try:
+            run(args+options+tail,cancel,cwd=job,progress=export_progress,total=duration)
+        except RuntimeError:
+            # Only retry startup failures, never silently restart a long completed portion.
+            if options[1]=='libx264' or last_percent>0 or time.monotonic()-began>30:raise
+            if cancel.is_set():raise InterruptedError('Đã hủy xuất video.')
+            encoder='CPU · libx264';began=time.monotonic()
+            report(0,'GPU không khởi động được với video này · chuyển sang CPU ultrafast')
+            run(args+['-c:v','libx264','-preset',preset,'-crf','20']+tail,
+                cancel,cwd=job,progress=export_progress,total=duration)
         if out.exists(): raise ValueError('Tệp đích vừa được tạo bởi tiến trình khác; không ghi đè.')
         partial.replace(out);report(100,'Đã xuất video.');return str(out)
     finally:

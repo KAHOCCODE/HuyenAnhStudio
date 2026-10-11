@@ -167,3 +167,9 @@ Bộ giải mã preview tạm dừng trong lúc xuất để tránh tranh tài n
 Sau khi chỉnh khung, bấm **Áp dụng & xuất toàn bộ video** ngay dưới khung chỉnh. Chọn giữ nguyên âm lượng video gốc, dùng âm lượng theo dự án, hoặc ghép voice Việt. Chọn nơi lưu MP4 mới; ứng dụng xuất từ đầu đến cuối với khung, màu và hiệu ứng đã chọn, không phụ thuộc vị trí con trỏ hoặc vùng timeline. Không cần có SRT hay voice nếu chọn âm gốc, và không bắt buộc lưu tệp dự án trước khi xuất.
 
 Xuất xong, bản hoàn chỉnh được mở trong cửa sổ phát của ứng dụng, có thanh tua và nút phát/tạm dừng. Bấm **Về chỉnh sửa** để trở lại dự án gốc. Video nguồn không bị ghi đè và hiệu ứng không bị áp dụng hai lần lên bản đã xuất. **Lưu thiết lập** chỉ lưu thay đổi vào trạng thái dự án đang mở, không dựng lại video; **Xem thử 10 giây** chỉ tạo đoạn thử. Dùng **Lưu dự án** nếu muốn giữ thiết lập cho lần mở sau.
+
+### Xuất nhanh bằng GPU
+
+Mức **Nhanh nhất · tự dùng GPU** kiểm tra NVIDIA NVENC, Intel Quick Sync rồi AMD AMF bằng một lượt mã hóa ngắn ở đúng kích thước xuất. Nếu dùng được, app xuất H.264 bằng bộ mã hóa đó; nếu không, dùng CPU ultrafast và ghi lý do vào nhật ký. Hai mức còn lại tiếp tục dùng CPU như trước. Xuất thử cũng kiểm tra GPU.
+
+Tiến độ hiển thị tên bộ mã hóa, tốc độ thực tế (ví dụ 2× nghĩa là xử lý khoảng hai giây video đầu ra mỗi giây) và thời gian còn lại. Ước tính bắt đầu sau 15 giây, vẫn có thể thay đổi theo cảnh. GPU chỉ tăng tốc mã hóa; vùng che, phụ đề, đổi khung và hiệu ứng vẫn xử lý trên CPU. Chất lượng và dung lượng tệp giữa các bộ mã hóa có thể khác nhau. Không có cam kết thời gian xuất cố định.

@@ -590,7 +590,7 @@ class Window(QMainWindow):
         vf.addRow(self.button('Phát video bằng CPU',self.switch_cpu))
         vf.addRow(self.button('Xuất vùng chọn / thử 10 giây',self.render_sample));vf.addRow(self.button('Lưu voice WAV',self.save_voice));vf.addRow(self.button('Khôi phục loa / tai nghe',self.restore_audio));pr.addWidget(voicebox);pr.addStretch();
         exportbox=QGroupBox('Xuất video');ef=QFormLayout(exportbox)
-        self.export_mode=QComboBox();self.export_mode.addItem('Nhanh · tệp lớn hơn','veryfast');self.export_mode.addItem('Nhanh nhất · tệp lớn','ultrafast');self.export_mode.addItem('Nén gọn · chậm','medium')
+        self.export_mode=QComboBox();self.export_mode.addItem('Nhanh · tệp lớn hơn','veryfast');self.export_mode.addItem('Nhanh nhất · tự dùng GPU','ultrafast');self.export_mode.addItem('Nén gọn · chậm','medium')
         self.export_mode.currentIndexChanged.connect(self.export_mode_changed);ef.addRow('Chế độ',self.export_mode);pr.insertWidget(pr.count()-1,exportbox)
         for form in [form,mf,sf,vf,ef]:
             form.setRowWrapPolicy(QFormLayout.WrapLongRows);form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -665,7 +665,7 @@ class Window(QMainWindow):
         dock.setFeatures(QDockWidget.DockWidgetClosable)
         panel=EffectsDialog(self,self.p.video_effects,embedded=True)
         speed=QComboBox();self.effects_speed=speed
-        for label,value in [('Nhanh nhất · tệp lớn','ultrafast'),('Nhanh · cân bằng','veryfast'),('Nén gọn · chậm','medium')]:speed.addItem(label,value)
+        for label,value in [('Nhanh nhất · tự dùng GPU','ultrafast'),('Nhanh · cân bằng','veryfast'),('Nén gọn · chậm','medium')]:speed.addItem(label,value)
         speed.setCurrentIndex(speed.findData(self.p.export_preset))
         speed.currentIndexChanged.connect(lambda:self.export_mode.setCurrentIndex(self.export_mode.findData(speed.currentData())))
         panel.layout().insertWidget(1,QLabel('Tốc độ xuất video'))
