@@ -43,12 +43,15 @@ class Project:
     music_clean: dict = field(default_factory=dict)
     music_threads: int = 2
     music_backend: str = "cpu"
+    original_muted: bool = False
     original_volume: float = .12
     voice_volume: float = 1.0
     style: dict = field(default_factory=lambda: dict(font='Arial', size=52, color='#FFFFFF', outline=3, shadow=2, bold=True, x=50., y=88., width=88., box=False))
     screen_regions: list = field(default_factory=list)
     mask: dict = field(default_factory=lambda: dict(enabled=False, mode='blur', x=8., y=80., w=84., h=14., opacity=1.0, color='#171717'))
 
+    @property
+    def original_gain(self): return 0.0 if self.original_muted else self.original_volume
     @property
     def speed(self): return self.work_speed * self.final_speed
     @property
@@ -76,6 +79,7 @@ class Project:
         if not isinstance(p.music_threads,int) or not 1<=p.music_threads<=8:raise ValueError('Số luồng giảm nhạc phải từ 1 đến 8.')
         if not isinstance(p.music_clean,dict):raise ValueError('Cấu hình giảm nhạc không hợp lệ.')
         if p.export_preset not in ('ultrafast','veryfast','medium'):raise ValueError('Chế độ xuất không hợp lệ.')
+        if not isinstance(p.original_muted,bool):raise ValueError('Trạng thái tắt âm gốc không hợp lệ.')
         effect_settings(p.video_effects)
         for region in p.screen_regions:validate_screen_region(region,p.duration)
         if len({r["id"] for r in p.screen_regions})!=len(p.screen_regions):raise ValueError("ID vùng chữ bị trùng.")
@@ -602,12 +606,12 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
         if preview is not None: args+=['-ss',f'{max(0,source_start-(segment[0] if local_voice else 0))/p.work_speed:.6f}']
         args+=['-i',str(local_voice['track'] if local_voice else voice_track_path(cache))]
     audios=[];source_audio='0:a'
-    clean=clean_audio_path(p)
+    clean=clean_audio_path(p) if p.has_audio and p.original_gain>0 else None
     if clean:
         if preview is not None:args+=['-ss',f'{source_start:.6f}']
         source_audio=f'{2 if with_voice else 1}:a';args+=['-i',str(clean)]
-    if p.has_audio and p.original_volume>0:
-        graph+=f';[{source_audio}]asetpts=PTS-STARTPTS,{atempo(p.speed)},volume={p.original_volume},apad,atrim=duration={duration:.6f}[original]';audios.append('[original]')
+    if p.has_audio and p.original_gain>0:
+        graph+=f';[{source_audio}]asetpts=PTS-STARTPTS,{atempo(p.speed)},volume={p.original_gain},apad,atrim=duration={duration:.6f}[original]';audios.append('[original]')
     if with_voice:
         graph+=f';[1:a]asetpts=PTS-STARTPTS,{atempo(p.final_speed)},volume={p.voice_volume},apad,atrim=duration={duration:.6f}[voice]';audios.append('[voice]')
     if audios: graph+=';'+''.join(audios)+f'amix=inputs={len(audios)}:duration=longest:normalize=0,alimiter=limit=0.97:level=false:latency=true[a]'

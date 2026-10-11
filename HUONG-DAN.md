@@ -87,6 +87,7 @@ App dùng thay đổi tốc độ âm thanh có giữ cao độ bằng FFmpeg; �
 
 - Khi voice đã đầy đủ, bấm **Phát** để nghe cùng video.
 - **Âm gốc** giảm toàn bộ âm thanh gốc, gồm giọng Trung, nhạc và hiệu ứng. Bản này chưa tách riêng giọng Trung khỏi nhạc. Đặt 0% để tắt toàn bộ âm gốc.
+- **Tắt âm thanh gốc** tắt toàn bộ lời thoại, nhạc và hiệu ứng của video khi xem và xuất, kể cả âm đã xử lý giảm nhạc. Voice Việt vẫn giữ riêng. Bỏ chọn để khôi phục mức âm lượng trước đó; trạng thái này được lưu cùng dự án.
 - **Voice Việt** chỉnh âm lượng lớp lồng tiếng.
 - **Xuất thử 10 giây** bắt đầu tại vị trí đang xem, theo tốc độ bản cuối; có voice nếu bản voice đang hợp lệ. Nếu chưa có voice hợp lệ, đoạn thử chỉ chứa sub và âm gốc theo thiết lập.
 - **Xuất video** cho chọn có hoặc không kèm voice. Xuất MP4 H.264/AAC với sub được ghi cứng vào hình.

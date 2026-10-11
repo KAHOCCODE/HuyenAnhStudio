@@ -574,8 +574,9 @@ class Window(QMainWindow):
         self.workers=self.spin(1,6,3,0,self.settings_changed);vf.addRow('Số câu tạo cùng lúc',self.workers)
         self.maxfit=self.spin(1,3,1.6,2,self.settings_changed);vf.addRow('Giới hạn ép câu ×',self.maxfit)
         self.vol=self.spin(0,100,12,0,self.settings_changed);vf.addRow('Âm gốc (%)',self.vol)
+        self.mute_original=QCheckBox('Tắt âm thanh gốc');self.mute_original.toggled.connect(self.settings_changed);vf.addRow(self.mute_original)
         self.vvol=self.spin(0,100,100,0,self.settings_changed);vf.addRow('Voice Việt (%)',self.vvol)
-        note=QLabel('Âm gốc giảm cả tiếng nói, nhạc và hiệu ứng. Giọng TTS cần mạng.');note.setWordWrap(True);note.setObjectName('muted');vf.addRow(note)
+        note=QLabel('Tắt âm thanh gốc sẽ tắt cả lời thoại, nhạc và hiệu ứng trong video, vẫn giữ voice Việt. Bỏ chọn để khôi phục mức âm lượng trước đó. Giọng TTS cần mạng.');note.setWordWrap(True);note.setObjectName('muted');vf.addRow(note)
         self.generate_btn=self.button('Chọn lượt tạo voice…',self.show_batches,True);vf.addRow(self.generate_btn)
         vf.addRow(self.button('Tạo voice toàn dự án',self.generate))
         vf.addRow(self.button('Tạo voice các câu đang chọn',self.generate_selected))
@@ -644,7 +645,7 @@ class Window(QMainWindow):
         self.font_picker.setCurrentFont(QFont(st['font']));self.font_size.setValue(st['size']);self.bold.setChecked(st['bold']);self.box.setChecked(st['box']);self.outline.setValue(st['outline']);self.shadow.setValue(st['shadow'])
         self.tx.setValue(st['x']);self.ty.setValue(st['y']);self.tw.setValue(st['width']);self.mask_on.setChecked(m['enabled']);self.mask_mode.setCurrentIndex(0 if m['mode']=='blur' else 1)
         self.mx.setValue(m['x']);self.my.setValue(m['y']);self.mw.setValue(m['w']);self.mh.setValue(m['h']);self.opacity.setValue(m['opacity'])
-        self.work.setValue(p.work_speed);self.final.setValue(p.final_speed);self.voice.setCurrentIndex(max(0,self.voice.findData(p.voice)));self.rate.setValue(p.tts_rate);self.workers.setValue(p.tts_workers);self.maxfit.setValue(p.max_fit);self.vol.setValue(p.original_volume*100);self.vvol.setValue(p.voice_volume*100)
+        self.work.setValue(p.work_speed);self.final.setValue(p.final_speed);self.voice.setCurrentIndex(max(0,self.voice.findData(p.voice)));self.rate.setValue(p.tts_rate);self.workers.setValue(p.tts_workers);self.maxfit.setValue(p.max_fit);self.vol.setValue(p.original_volume*100);self.mute_original.setChecked(p.original_muted);self.vol.setEnabled(not p.original_muted);self.vvol.setValue(p.voice_volume*100)
         self.export_mode.setCurrentIndex(max(0,self.export_mode.findData(p.export_preset)))
         effects=effect_settings(p.video_effects)
         w,h=output_size(p)
@@ -690,8 +691,8 @@ class Window(QMainWindow):
         elif self.cpu_mode:self.cpu_seek(self.source_position()/1000)
     def export_effects_full(self):
         if not self.guard():return
-        choices=['Giữ nguyên âm lượng video gốc', 'Dùng âm lượng gốc đã chỉnh trong dự án', 'Ghép voice Việt và âm gốc theo dự án']
-        mode,ok=QInputDialog.getItem(self,'Âm thanh bản hoàn chỉnh','Áp dụng khung cho toàn bộ video đang mở. Chọn âm thanh:',choices,0,False)
+        choices=['Giữ âm lượng gốc (vẫn tắt nếu đã chọn tắt âm)', 'Dùng thiết lập âm gốc của dự án', 'Ghép voice Việt và âm gốc theo dự án']
+        mode,ok=QInputDialog.getItem(self,'Âm thanh bản hoàn chỉnh','Áp dụng khung cho toàn bộ video đang mở. Chọn âm thanh:',choices,1 if self.p.original_muted else 0,False)
         if not ok:return
         self.export(voice_choice=QMessageBox.Yes if mode==choices[2] else QMessageBox.No,
                     preserve_original=mode==choices[0],show_result=True)
@@ -743,7 +744,7 @@ class Window(QMainWindow):
     def settings_changed(self,*args):
         if self.syncing:return
         if self.busy:self.load_controls();return
-        self.push_undo();self.p.work_speed=self.work.value();self.p.final_speed=self.final.value() if self.final.value()!=round(self.p.final_speed,4) else self.p.final_speed;self.p.voice=self.voice.currentData();self.p.tts_rate=round(self.rate.value());self.p.tts_workers=round(self.workers.value());self.p.max_fit=self.maxfit.value();self.p.original_volume=self.vol.value()/100;self.p.voice_volume=self.vvol.value()/100;self.changed()
+        self.push_undo();self.p.work_speed=self.work.value();self.p.final_speed=self.final.value() if self.final.value()!=round(self.p.final_speed,4) else self.p.final_speed;self.p.voice=self.voice.currentData();self.p.tts_rate=round(self.rate.value());self.p.tts_workers=round(self.workers.value());self.p.max_fit=self.maxfit.value();self.p.original_volume=self.vol.value()/100;self.p.original_muted=self.mute_original.isChecked();self.vol.setEnabled(not self.p.original_muted);self.p.voice_volume=self.vvol.value()/100;self.changed()
     def restore_speed(self):
         if not self.guard():return
         self.push_undo();self.p.final_speed=1/self.p.work_speed
@@ -755,7 +756,7 @@ class Window(QMainWindow):
         altered=getattr(self,'_nominal_rates',None)!=rates
         self._nominal_rates=rates
         if altered:self.player.setPlaybackRate(video_rate);self.voice_player.setPlaybackRate(voice_rate)
-        self.audio.setVolume(self.p.original_volume);self.voice_audio.setVolume(min(1,self.p.voice_volume))
+        self.audio.setVolume(self.p.original_gain);self.voice_audio.setVolume(min(1,self.p.voice_volume))
         self.speed_label.setText(f'Bản cuối: {self.p.speed:.3f}× tốc độ gốc\nThời lượng: {stamp(self.p.output_duration)}\nVoice bản cuối nhanh thêm {self.p.final_speed:.3f}× so với lúc dựng.')
         self.on_position(self.source_position())
         if altered:self.sync_voice(force=True)
@@ -777,7 +778,7 @@ class Window(QMainWindow):
         if device.isNull():self.error('Windows chưa có thiết bị phát âm thanh khả dụng. Chọn loa/tai nghe trong cài đặt âm thanh rồi thử lại.');return
         was_playing=self.player.playbackState()==QMediaPlayer.PlayingState
         self.player.pause();self.voice_player.pause();self.sample_player.stop()
-        for player,attr,volume in [(self.player,'audio',self.p.original_volume),(self.voice_player,'voice_audio',min(1,self.p.voice_volume)),(self.sample_player,'sample_audio',1.)]:
+        for player,attr,volume in [(self.player,'audio',self.p.original_gain),(self.voice_player,'voice_audio',min(1,self.p.voice_volume)),(self.sample_player,'sample_audio',1.)]:
             old=getattr(self,attr);new=QAudioOutput(device,self);new.setVolume(volume);player.setAudioOutput(new);setattr(self,attr,new);old.deleteLater()
         self.status.setText('Đã chọn lại âm thanh: '+device.description());self.log(self.status.text())
         if was_playing:self.player.play()

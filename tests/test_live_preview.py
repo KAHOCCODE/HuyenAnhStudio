@@ -1,4 +1,5 @@
 import os
+import json
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 import queue
 import subprocess
@@ -21,11 +22,12 @@ class LivePreviewTests(unittest.TestCase):
         cls.path=Path(cls.tmp.name)/'source.mp4'
         subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i',
                         'testsrc2=size=320x180:rate=30:duration=2',
+                        '-f','lavfi','-i','sine=frequency=440:duration=2','-c:a','aac',
                         '-c:v','libx264','-threads','1',str(cls.path)],check=True)
     @classmethod
     def tearDownClass(cls):cls.tmp.cleanup()
 
-    def project(self):return Project(video=str(self.path),video_codec='h264',width=320,height=180,duration=2)
+    def project(self):return Project(video=str(self.path),video_codec='h264',width=320,height=180,duration=2,has_audio=True)
 
     def frame(self,p):
         decoder=CPUFrames(p.video,'h264',320,180,.5,project=p)
@@ -82,3 +84,33 @@ class LivePreviewTests(unittest.TestCase):
                              threading.Event(),lambda *a:None,with_voice=False)
             command=next(c.args[0] for c in run.call_args_list if '-preset' in c.args[0])
             self.assertEqual(command[command.index('-preset')+1],preset)
+
+    def test_mute_preview_restore_and_project_save(self):
+        w=Window();w.p=self.project();w.load_controls()
+        try:
+            w.vol.setValue(37)
+            w.mute_original.setChecked(True)
+            self.assertEqual(w.audio.volume(),0)
+            self.assertFalse(w.vol.isEnabled())
+            saved=Project.from_dict(w.p.to_dict())
+            self.assertTrue(saved.original_muted)
+            self.assertAlmostEqual(saved.original_volume,.37)
+            self.assertEqual(w.voice_audio.volume(),1)
+            w.mute_original.setChecked(False)
+            self.assertAlmostEqual(w.audio.volume(),.37,places=5)
+            self.assertTrue(w.vol.isEnabled())
+            self.assertFalse(Project.from_dict({'version':1}).original_muted)
+        finally:
+            w.close_cpu();w.dirty=False;w.close();w.deleteLater();QTest.qWait(100)
+
+    def test_mute_export_removes_original_but_keeps_voice(self):
+        p=self.project();p.original_muted=True
+        p.music_clean={'enabled':True}  # Missing processed audio must not block a muted export.
+        for voice in (False,True):
+            out=Path(self.tmp.name)/('muted-voice.mp4' if voice else 'muted.mp4')
+            export_video(p,Path(self.tmp.name)/'cache',out,threading.Event(),lambda *a:None,
+                         with_voice=voice,segment=(0,2) if voice else None,
+                         review_voice={'track':str(self.path),'complete':True} if voice else None)
+            streams=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams',
+                                                        '-of','json',str(out)]))['streams']
+            self.assertEqual(any(s['codec_type']=='audio' for s in streams),voice)
