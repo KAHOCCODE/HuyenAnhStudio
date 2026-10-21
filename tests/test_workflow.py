@@ -85,3 +85,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(self.w.layers_panel.logo_button.isVisible())
         self.w.go_stage(3);self.w.select_id(self.w.p.cues[0].id);self.w.show_editor()
         self.assertFalse(self.w.editor_dialog.isFloating());self.assertFalse(self.w.timeline.isVisible())
+
+    def test_slow_video_control_precedes_voice_generation(self):
+        w=self.w;w.go_stage(3);w.subtitle_tabs.setCurrentIndex(1);QTest.qWait(20)
+        self.assertTrue(w.work.isVisible())
+        form=w.work.parentWidget().layout()
+        self.assertLess(form.getWidgetPosition(w.work)[0],form.getWidgetPosition(w.generate_btn)[0])
+        w.work.setValue(.8)
+        self.assertEqual(w.p.work_speed,.8);self.assertEqual(w.p.final_speed,1)
+        self.assertAlmostEqual(w.p.output_duration,150)
+        self.assertIn('1.25',w.work_hint.text())
+
+    def test_subtitle_positions_and_output_space_drag(self):
+        import tempfile
+        from pathlib import Path
+        from PySide6.QtCore import Qt,QPoint
+        from studio.core import write_ass
+        w=self.w;w.p.sidebar=dict(enabled=True,side='left',width=25);w.p.video_effects=dict(enabled=True,flip=True)
+        w.preview.reset_size();w.go_stage(3);w.subtitle_tabs.setCurrentIndex(0)
+        w.subtitle_position.setCurrentIndex(2)
+        self.assertEqual((w.p.style['x'],w.p.style['y']),(50,16))
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'subtitles.ass';write_ass(path,w.p,regions=False,canvas=(640,360))
+            self.assertIn(r'\pos(400.00,57.60)',path.read_text(encoding='utf-8-sig'))
+        w.subtitle_move.setChecked(True);QTest.qWait(20)
+        self.assertTrue(w.preview.subtitle_box.isVisible())
+        point=w.preview.mapFromScene(w.preview.subtitle_box.rect().center())
+        QTest.mousePress(w.preview.viewport(),Qt.LeftButton,pos=point)
+        QTest.mouseMove(w.preview.viewport(),point+QPoint(15,20))
+        QTest.mouseRelease(w.preview.viewport(),Qt.LeftButton,pos=point+QPoint(15,20))
+        self.assertGreater(w.p.style['y'],16);self.assertGreater(w.p.style['x'],50)
+        self.assertEqual(w.subtitle_position.currentIndex(),3)
+        w.undo_action();self.assertEqual(w.p.style['y'],16)

@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3 — quy trình thống nhất
+# HUYỄN ẢNH Studio 0.3.1 — quy trình thống nhất
 
 Ứng dụng desktop dành cho Windows để chỉnh hình, che phụ đề gốc, thêm chữ/logo, phụ đề Việt và giọng đọc. Giao diện làm việc theo năm bước với một bảng chỉnh cố định bên phải.
 
@@ -42,11 +42,11 @@ Bật **Chừa dải bên** nếu muốn đặt tên kênh/logo ở phần bên 
 
 Danh sách phụ đề tự hiện ở bước này. Bật **Dòng thời gian** khi cần chỉnh mốc hoặc chọn vùng. Bấm **Nhập SRT…** ở danh sách trái để nhập một hay nhiều tệp phụ đề Việt. SRT dùng mốc nguồn, mã hóa UTF-8 hoặc UTF-16 có BOM; câu vượt thời lượng nguồn cần sửa trước khi xuất. Các mục trống được giữ nhưng không hiện chữ và không đọc.
 
-Trong **Kiểu phụ đề**, chọn một trong sáu mẫu, phông, cỡ và màu chữ. Viền, nền, in nghiêng, giãn chữ, vị trí và hiện/ẩn mềm nằm ở phần nâng cao. Khi tự thay đổi thông số, bộ chọn mẫu hiển thị Tùy chỉnh nếu không còn khớp mẫu sẵn. Khi có dải bên, vị trí và chiều rộng phụ đề dựa trên phần video còn lại.
+Trong **Kiểu phụ đề**, chọn một trong sáu mẫu, phông, cỡ và màu chữ. Vị trí phụ đề hiện ngay trong phần chính: chọn Trên/Giữa/Dưới hoặc nhập X/Y và chiều rộng. Bật **Kéo vị trí phụ đề trên video** để kéo khung vàng trên preview; vị trí áp dụng cho toàn bộ SRT và được giữ đúng chiều sau khi lật hình. Khi có dải bên, vị trí tính theo phần video còn lại. Viền, nền, in nghiêng, giãn chữ và hiện/ẩn mềm nằm ở phần nâng cao. Khi tự thay đổi thông số, bộ chọn mẫu hiển thị Tùy chỉnh nếu không còn khớp mẫu sẵn. Khi có dải bên, vị trí và chiều rộng phụ đề dựa trên phần video còn lại.
 
 Nhấp đúp câu để sửa trong khung gắn ở đáy app. Mốc câu ở dạng 00:01:23,456 theo nguồn. Nội dung được áp dụng khi chuyển câu, rời bước, lưu hoặc bắt đầu tác vụ; mốc sai cần sửa trước. Kéo khối câu để dịch mốc, kéo mép để đổi thời lượng; giữ Ctrl để chọn nhiều và Shift+kéo để chọn vùng. Các thanh phụ đề và voice của cùng câu dùng chung mốc. Đóng/mở **Dòng thời gian** để có thêm diện tích xem; khi sửa câu, dòng thời gian tạm thu lại.
 
-Trong **Âm thanh / giọng đọc**, chọn giọng, tốc độ đọc và phạm vi rồi bấm **Tạo / cập nhật giọng đọc…**. Chỉ có một nút tạo, với bốn phạm vi: theo đợt, toàn bộ dự án, câu đang chọn hoặc vùng thời gian. Theo đợt phù hợp video dài. **Kiểm tra / sửa giọng đọc** chứa câu thiếu/lỗi, câu quá dài và lưu WAV. Số câu tạo đồng thời, giới hạn ép câu, xóa dữ liệu giọng và tách âm nền nằm trong phần nâng cao.
+Trong **Âm thanh / giọng đọc**, mục **Tốc độ video dựng ×** nằm ngay trên phần tạo giọng, không ở trong nâng cao. Nếu lời quá dài, giảm tốc video trước (ví dụ 0,8×), rồi chọn giọng, tốc độ đọc và phạm vi, bấm **Tạo / cập nhật giọng đọc…**. Chỉ có một nút tạo, với bốn phạm vi: theo đợt, toàn bộ dự án, câu đang chọn hoặc vùng thời gian. Theo đợt phù hợp video dài. **Kiểm tra / sửa giọng đọc** chứa câu thiếu/lỗi, câu quá dài và lưu WAV. Số câu tạo đồng thời, giới hạn ép câu, xóa dữ liệu giọng và tách âm nền nằm trong phần nâng cao.
 
 - Giọng ngắn hơn khoảng câu được thêm im lặng; giọng dài hơn được tăng tốc trong giới hạn. Nếu vẫn quá dài, sửa câu, tăng khoảng câu hoặc đổi thiết lập rồi tạo/ghép lại.
 - MP3 có cùng văn bản, giọng và tốc độ được dùng lại khi chạy tiếp. Có tiến độ, thử lại khi lỗi và hủy tác vụ; không tự rút gọn văn bản.
@@ -62,7 +62,7 @@ Ba mức xuất là Nhanh, Nhanh nhất tự dùng GPU và Nén gọn. Mức nha
 
 **Xem thử 10 giây** bên dưới preview dùng cùng thiết lập hình và lựa chọn âm thanh/giọng Việt ở bước Xuất, bắt đầu tại con trỏ. Xem thử không tạo lại voice. Nếu đã chọn ghép giọng nhưng voice chưa hợp lệ, cần cập nhật hoặc bỏ chọn trước. **Xuất toàn bộ video…** luôn dựng từ đầu đến cuối, không phụ thuộc vùng timeline. Chọn tên MP4 mới; video nguồn và tệp đã có không bị ghi đè. Kết quả hoàn chỉnh mở trong trình phát của app.
 
-Trong **Tốc độ dựng và thời lượng** có tốc độ dựng và tăng tốc bản cuối. Tổng tốc độ bằng tích hai mức; thời lượng bản xuất bằng thời lượng nguồn chia tổng tốc độ. Ví dụ nguồn 7 giờ ở tổng tốc độ 0,7× thành 10 giờ. Đổi tốc độ dựng ảnh hưởng việc ghép giọng; đổi tốc độ cuối không gọi lại dịch vụ TTS. Có thể nghe theo tốc độ dựng hoặc bản cuối ở bước Sub và giọng. Giảm rồi tăng tốc trở lại không tạo thêm thời gian đọc trong bản cuối.
+Tốc độ dựng được chỉnh ở bước **Sub và giọng → Âm thanh / giọng đọc** trước khi tạo voice. **Tốc độ bản cuối và thời lượng** ở bước Xuất chỉ chỉnh tốc độ bản cuối. Tổng tốc độ bằng tích hai mức; thời lượng bản xuất bằng thời lượng nguồn chia tổng tốc độ. Ví dụ nguồn 7 giờ ở tổng tốc độ 0,7× thành 10 giờ. Đổi tốc độ dựng ảnh hưởng việc ghép giọng; đổi tốc độ cuối không gọi lại dịch vụ TTS. Có thể nghe theo tốc độ dựng hoặc bản cuối ở bước Sub và giọng. Giảm rồi tăng tốc trở lại không tạo thêm thời gian đọc trong bản cuối.
 
 ## 3. Lưu, cập nhật và khôi phục
 

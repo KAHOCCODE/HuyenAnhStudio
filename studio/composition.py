@@ -90,6 +90,14 @@ def render_needed(p):
                 or p.style.get('decorated'))
 
 
+def subtitle_area(p,w,h):
+    """Source-independent subtitle coordinates, excluding a reserved side panel."""
+    bar=sidebar_settings(p.sidebar)
+    content_w=max(2,int(w*(1-bar['width']/100))//2*2) if bar['enabled'] else w
+    origin_x=w-content_w if bar['enabled'] and bar['side']=='left' else 0
+    return origin_x,content_w,h
+
+
 def layer_rect(v,w,h):
     return (w*v['x']/100,h*v['y']/100,w*v['w']/100,h*v['h']/100)
 

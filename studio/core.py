@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Callable
 from .video_effects import settings as effect_settings, output_size, picture_filter
-from .composition import validate_composition, prepare_layers, artwork_filter, sidebar_settings
+from .composition import validate_composition, prepare_layers, artwork_filter, sidebar_settings, subtitle_area
 
 RATE = 24000
 ROOT = Path(__file__).resolve().parent.parent
@@ -210,10 +210,7 @@ def write_ass(path,p, *, cues=True, regions=True, canvas=None, mirror_regions=Fa
     st=p.style; w,h=canvas or (p.width,p.height)
     # Font size is specified on a 1080-high canvas, proportional for other resolutions.
     scale=h/1080
-    content_w=w;origin_x=0
-    if canvas and cues and p.sidebar.get('enabled'):
-        bar=sidebar_settings(p.sidebar);content_w=max(2,int(w*(1-bar['width']/100))//2*2)
-        if bar['side']=='left':origin_x=w-content_w
+    origin_x,content_w,_=subtitle_area(p,w,h) if canvas and cues else (0,w,h)
     margin=max(0,round(content_w*(100-st['width'])/200))
     margin_left=origin_x+margin;margin_right=w-origin_x-content_w+margin
     header=f'''[Script Info]

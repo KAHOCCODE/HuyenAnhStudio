@@ -120,3 +120,28 @@ class CompositionTests(unittest.TestCase):
         self.assertEqual(len(calls),1)
         self.assertNotEqual(first['track'],second['track'])
         self.assertAlmostEqual(core.probe(second['track'])['duration'],2,delta=.05)
+
+    def test_top_subtitle_renders_after_mirror_inside_video_area(self):
+        p=self.p();p.video_effects=dict(enabled=True,flip=True);p.sidebar=dict(enabled=True,side='left',width=25,color='#111111')
+        p.cues=[Cue(0,2,'VỊ TRÍ PHỤ ĐỀ')];p.style.update(y=16)
+        image=self.pixels(self.export(p,'top-subtitle.mp4'))
+        top=[(x,y) for x in range(320) for y in range(60) if min(image.pixelColor(x,y).getRgb()[:3])>200]
+        self.assertGreater(len(top),10);self.assertGreater(min(x for x,y in top),80)
+        self.assertAlmostEqual(sum(x for x,y in top)/len(top),200,delta=12)
+        self.assertFalse(any(min(image.pixelColor(x,y).getRgb()[:3])>200 for x in range(320) for y in range(120,180)))
+
+    def test_slowing_before_voice_fitting_prevents_overlap(self):
+        from studio import core
+        import shutil
+        cache=self.root/'fitting-cache';cache.mkdir()
+        p=self.p();p.max_fit=1.2;c1=Cue(0,1,'Câu đầu');c2=Cue(1,2,'Câu tiếp')
+        first=cache/(core.raw_key(c1,p)+'.mp3');second=cache/(core.raw_key(c2,p)+'.mp3')
+        subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','sine=frequency=440:duration=1.6',str(first)],check=True)
+        shutil.copyfile(first,second)
+        fast=core.prepare_voice_row(c1,p,cache,threading.Event(),known_duration=1.6)
+        self.assertFalse(fast['ok']);self.assertGreater(fast['end'],c2.start)
+        p.work_speed=.5
+        slow1=core.prepare_voice_row(c1,p,cache,threading.Event(),known_duration=1.6)
+        slow2=core.prepare_voice_row(c2,p,cache,threading.Event(),known_duration=1.6)
+        self.assertTrue(slow1['ok']);self.assertEqual(slow1['spill'],0)
+        self.assertLessEqual(slow1['end'],slow2['start'])

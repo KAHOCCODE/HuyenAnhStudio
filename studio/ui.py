@@ -15,7 +15,7 @@ from .effects_ui import EffectsDialog
 from .result_player import ResultPlayer
 from .layers_ui import LayersPanel
 from .workflow_ui import install as install_workflow, STAGES, HINTS
-from .composition import render_needed, layer_rect, SUBTITLE_PRESETS, validate_composition
+from .composition import render_needed, layer_rect, SUBTITLE_PRESETS, validate_composition, subtitle_area
 
 VOICES={'Nam Minh · Nam':'vi-VN-NamMinhNeural','Hoài My · Nữ':'vi-VN-HoaiMyNeural'}
 
@@ -201,8 +201,6 @@ class Overlay(QGraphicsObject):
             r=self.mask_rect()
             self.drag='resize' if abs(pos.x()-r.right())<40 and abs(pos.y()-r.bottom())<40 else 'mask'
             self.origin=pos;self.original=copy.deepcopy(m)
-        elif self.text_rect.contains(pos):
-            self.drag='text';self.origin=pos;self.original=copy.deepcopy(self.win.p.style)
         event.accept()
     def mouseMoveEvent(self,event):
         if not self.drag:return
@@ -221,6 +219,7 @@ class Preview(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.video=QGraphicsPixmapItem();self.video.setTransformationMode(Qt.SmoothTransformation);self.scene().addItem(self.video);self.overlay=Overlay(win);self.scene().addItem(self.overlay)
         self.layer_box=QGraphicsRectItem();self.layer_box.setZValue(40);self.layer_box.setPen(QPen(QColor('#7BF1DD'),2));self.scene().addItem(self.layer_box);self.layer_box.hide()
+        self.subtitle_box=QGraphicsRectItem();self.subtitle_box.setZValue(45);pen=QPen(QColor('#FFD478'),2,Qt.DashLine);pen.setCosmetic(True);self.subtitle_box.setPen(pen);self.scene().addItem(self.subtitle_box);self.subtitle_box.hide()
         self.pick_origin=None;self.pick_box=QGraphicsRectItem();self.pick_box.setZValue(30);self.pick_box.setPen(QPen(QColor('#73dfcc'),3));self.pick_box.setBrush(QColor(70,200,180,40));self.scene().addItem(self.pick_box);self.pick_box.hide()
         self.setMinimumSize(300,160);self.setViewport(QWidget());self.reset_size()
     def reset_size(self):
@@ -239,13 +238,27 @@ class Preview(QGraphicsView):
             self.setSceneRect(0,0,w,h);self.fitInView(self.sceneRect(),Qt.KeepAspectRatio)
         self.overlay.setVisible(not filtered)
         if not filtered:self.overlay.frame=image
-        self.overlay.update();self.update_layer_box()
+        self.overlay.update();self.update_layer_box();self.update_subtitle_box()
         return True
     def update_layer_box(self):
         panel=getattr(self.win,'layers_panel',None);dock=getattr(self.win,'layers_dock',None)
         v=panel.selected if panel and dock and dock.isVisible() else None
         if not v or self.win.mask_edit.isChecked() or self.win.region_select.isChecked():self.layer_box.hide();return
         w,h=output_size(self.win.p);self.layer_box.setRect(QRectF(*layer_rect(v,w,h)));self.layer_box.show()
+    def update_subtitle_box(self,*args):
+        control=getattr(self.win,'subtitle_move',None)
+        if not control or not control.isChecked() or self.win.busy or self.win.stage_index!=3 or self.win.subtitle_tabs.currentIndex()!=0:
+            self.subtitle_drag=None;self.subtitle_box.hide();return
+        p=self.win.p;w,h=output_size(p);ox,cw,_=subtitle_area(p,w,h);st=p.style
+        anchor_x=ox+cw*st['x']/100;anchor_y=h*st['y']/100
+        width=cw*st['width']/100;height=max(16,h*st['size']/1080*2.6)
+        self.subtitle_box.setRect(QRectF(anchor_x-width/2,anchor_y-height,width,height).intersected(QRectF(ox,0,cw,h)));self.subtitle_box.show()
+    def subtitle_press(self,event):
+        self.update_subtitle_box()
+        if event.button()!=Qt.LeftButton or not self.subtitle_box.isVisible():return False
+        point=self.mapToScene(event.position().toPoint())
+        if not self.subtitle_box.rect().contains(point):return False
+        self.win.push_undo();self.subtitle_drag=(point,self.win.p.style['x'],self.win.p.style['y']);event.accept();return True
     def artwork_press(self,event):
         panel=getattr(self.win,'layers_panel',None);dock=getattr(self.win,'layers_dock',None)
         if not panel or not dock.isVisible() or self.win.busy or event.button()!=Qt.LeftButton or self.win.mask_edit.isChecked() or self.win.region_select.isChecked():return False
@@ -265,7 +278,7 @@ class Preview(QGraphicsView):
             event.accept();return
         super().wheelEvent(event)
     def mousePressEvent(self,event):
-        if self.artwork_press(event):return
+        if self.subtitle_press(event) or self.artwork_press(event):return
         panel=getattr(self.win,'effects_panel',None);dock=getattr(self.win,'effects_dock',None)
         if panel and dock.isVisible() and not self.win.busy and event.button()==Qt.LeftButton and not self.win.mask_edit.isChecked() and not self.win.region_select.isChecked():
             panel.canvas.source_size=(self.win.p.width,self.win.p.height)
@@ -279,6 +292,10 @@ class Preview(QGraphicsView):
             self.pick_origin=pos;self.pick_box.setRect(QRectF(pos,pos));self.pick_box.show();event.accept();return
         super().mousePressEvent(event)
     def mouseMoveEvent(self,event):
+        subtitle_drag=getattr(self,'subtitle_drag',None)
+        if subtitle_drag:
+            start,x,y=subtitle_drag;delta=self.mapToScene(event.position().toPoint())-start;w,h=output_size(self.win.p);_,cw,_=subtitle_area(self.win.p,w,h)
+            self.win.move_subtitle(max(0,min(100,x+delta.x()/cw*100)),max(0,min(100,y+delta.y()/h*100)));event.accept();return
         layer_drag=getattr(self,'layer_drag',None)
         if layer_drag:
             point,v,corner=layer_drag;delta=self.mapToScene(event.position().toPoint())-point;w,h=output_size(self.win.p)
@@ -296,6 +313,7 @@ class Preview(QGraphicsView):
             rect=QRectF(self.pick_origin,self.mapToScene(event.position().toPoint())).normalized().intersected(self.sceneRect());self.pick_box.setRect(rect);event.accept();return
         super().mouseMoveEvent(event)
     def mouseReleaseEvent(self,event):
+        if getattr(self,'subtitle_drag',None):self.subtitle_drag=None;self.win.changed(False);event.accept();return
         if getattr(self,'layer_drag',None):self.layer_drag=None;event.accept();return
         if getattr(self,'frame_drag',None):self.frame_drag=None;event.accept();return
         if self.pick_origin is not None:
@@ -584,7 +602,11 @@ class Window(QMainWindow):
         self.sub_outline_color=self.button('Màu viền / nền chữ',self.pick_sub_outline);form.addRow(self.sub_outline_color)
         self.outline=self.spin(0,10,3,1,self.visual_changed);form.addRow('Viền đen',self.outline)
         self.shadow=self.spin(0,10,2,1,self.visual_changed);form.addRow('Bóng chữ',self.shadow)
-        self.tx=self.spin(0,100,50,1,self.visual_changed);self.ty=self.spin(0,100,88,1,self.visual_changed);self.tw=self.spin(20,100,88,1,self.visual_changed)
+        self.tx=self.spin(0,100,50,2,self.visual_changed);self.ty=self.spin(0,100,88,2,self.visual_changed);self.tw=self.spin(20,100,88,1,self.visual_changed)
+        self.subtitle_position=QComboBox()
+        for name,value in [('Dưới video',(50,88)),('Giữa video',(50,55)),('Trên video',(50,16)),('Tùy chỉnh',None)]:self.subtitle_position.addItem(name,value)
+        self.subtitle_position.currentIndexChanged.connect(self.set_subtitle_position);form.addRow('Đặt phụ đề',self.subtitle_position)
+        self.subtitle_move=QCheckBox('Kéo vị trí phụ đề trên video');self.subtitle_move.toggled.connect(self.preview.update_subtitle_box);form.addRow(self.subtitle_move)
         form.addRow('Vị trí X (%)',self.tx);form.addRow('Vị trí Y (%)',self.ty);form.addRow('Rộng chữ (%)',self.tw);pr.addWidget(stylebox)
         maskbox=QGroupBox('Che phụ đề tiếng Trung');mf=QFormLayout(maskbox)
         self.mask_on=QCheckBox('Bật vùng che');self.mask_on.toggled.connect(self.visual_changed);mf.addRow(self.mask_on);self.mask_mode=QComboBox();self.mask_mode.addItem('Mờ thường','blur');self.mask_mode.addItem('Phủ màu','solid');self.mask_mode.addItem('Mờ mềm','gblur');self.mask_mode.addItem('Ô vuông / mosaic','mosaic');self.mask_mode.currentIndexChanged.connect(self.visual_changed);mf.addRow('Cách che',self.mask_mode);mf.addRow(self.mask_edit);self.mask_edit.toggled.connect(lambda:self.preview.overlay.update());self.mask_edit.toggled.connect(self.refresh_effect_preview);self.region_select.toggled.connect(self.refresh_effect_preview)
@@ -596,8 +618,10 @@ class Window(QMainWindow):
         self.opacity=self.spin(.1,1,1,2,self.visual_changed);mf.addRow('Độ đậm phủ màu',self.opacity);mf.addRow(self.button('Màu vùng che',self.pick_mask_color));pr.addWidget(maskbox)
         speedbox=QGroupBox('Tốc độ & đồng bộ');sf=QFormLayout(speedbox)
         self.work=self.spin(.25,2,1,2,self.settings_changed);self.work.setSingleStep(.05);self.final=self.spin(.25,4,1,4,self.settings_changed);self.final.setSingleStep(.05)
-        sf.addRow('Tốc độ dựng ×',self.work);sf.addRow('Tăng tốc bản cuối ×',self.final);sf.addRow(self.button('Bản cuối về tốc độ gốc',self.restore_speed));self.speed_label=QLabel();self.speed_label.setWordWrap(True);sf.addRow(self.speed_label);pr.addWidget(speedbox)
+        sf.addRow('Tốc độ bản cuối ×',self.final);sf.addRow(self.button('Bản cuối về tốc độ gốc',self.restore_speed));self.speed_label=QLabel();self.speed_label.setWordWrap(True);sf.addRow(self.speed_label);pr.addWidget(speedbox)
         voicebox=QGroupBox('Lồng tiếng Edge TTS');vf=QFormLayout(voicebox)
+        self.work.setToolTip('Giảm tốc video trước khi tạo giọng để mỗi khoảng phụ đề có thêm thời gian đọc.')
+        vf.addRow('Tốc độ video dựng ×',self.work);self.work_hint=QLabel();self.work_hint.setWordWrap(True);self.work_hint.setObjectName('muted');vf.addRow(self.work_hint)
         self.voice=QComboBox();[self.voice.addItem(k,v) for k,v in VOICES.items()];self.voice.currentIndexChanged.connect(self.settings_changed);vf.addRow('Giọng mặc định',self.voice)
         self.rate=self.spin(-40,100,0,0,self.settings_changed);vf.addRow('Tốc độ đọc (%)',self.rate)
         self.voice_summary.setParent(None);vf.addRow(self.voice_summary)
@@ -616,7 +640,7 @@ class Window(QMainWindow):
         self.maxfit=self.spin(1,3,1.6,2,self.settings_changed);vf.addRow('Giới hạn ép câu ×',self.maxfit)
         delete=self.button('Dọn giọng đọc đã tạo ▾',lambda:None);menu=QMenu(delete);menu.addAction('Xóa giọng các câu chọn…',self.delete_selected_voice);menu.addAction('Xóa toàn bộ giọng dự án…',self.delete_all_voice);delete.setMenu(menu);vf.addRow(delete)
         from .workflow_ui import fold_rows
-        fold_rows(voicebox,{self.voice,self.rate,self.voice_scope,self.generate_btn,self.voice_summary,tools,self.vol,self.mute_original,self.vvol},'Tách âm nền & thiết lập nâng cao')
+        fold_rows(voicebox,{self.work,self.work_hint,self.voice,self.rate,self.voice_scope,self.generate_btn,self.voice_summary,tools,self.vol,self.mute_original,self.vvol},'Tách âm nền & thiết lập nâng cao')
         pr.addWidget(voicebox);pr.addStretch()
         exportbox=QGroupBox('Xuất video');ef=QFormLayout(exportbox)
         self.export_mode=QComboBox();self.export_mode.addItem('Nhanh · tệp lớn hơn','veryfast');self.export_mode.addItem('Nhanh nhất · tự dùng GPU','ultrafast');self.export_mode.addItem('Nén gọn · chậm','medium')
@@ -648,11 +672,11 @@ class Window(QMainWindow):
         self.workflow_stack.setCurrentIndex(index)
         if index!=1 or self.picture_tabs.currentIndex()!=0:
             self.mask_edit.setChecked(False);self.region_select.setChecked(False)
-        if index!=3:self.editor_dialog.hide()
+        if index!=3:self.editor_dialog.hide();self.subtitle_move.setChecked(False)
         if index==2:self.ensure_layers_panel()
         elif index==1 and self.picture_tabs.currentIndex()==1:self.ensure_effects_panel()
         if old!=index:self.timeline_toggle.setChecked(False)
-        self.refresh_workflow();self.update_workspace_visibility();self.preview.update_layer_box()
+        self.refresh_workflow();self.update_workspace_visibility();self.preview.update_layer_box();self.preview.update_subtitle_box()
         return True
     def picture_tab_changed(self,index):
         if index==1:
@@ -685,6 +709,7 @@ class Window(QMainWindow):
         w,h=output_size(self.p);audio='tắt tiếng gốc' if self.p.original_gain==0 else f'âm gốc {self.p.original_volume*100:.0f}%'
         if not self.p.has_audio:audio='video không có tiếng gốc'
         if self.p.has_audio and self.p.music_clean.get('enabled') and self.p.original_gain:audio+=' · đã giảm nền'
+        self.preview.update_subtitle_box()
         self.export_summary.setText(f'Kích thước: {w} × {h}\nNguồn: {stamp(self.p.duration)}\nBản xuất: {stamp(self.p.output_duration)} · tốc độ {self.p.speed:.3f}×\nÂm thanh: {audio}'+(' + giọng Việt' if self.include_voice.isChecked() else ''))
     def export_voice_changed(self,*args):
         self._export_voice_manual=True;self.refresh_workflow()
@@ -723,8 +748,8 @@ class Window(QMainWindow):
         self.media_label.setText(name);self.media_label.setToolTip(self.p.video or name)
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
-        self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.0'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.1'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -741,7 +766,7 @@ class Window(QMainWindow):
         panel=getattr(self,'effects_panel',None)
         if panel and isValid(panel):panel.load_values(p.video_effects)
         if getattr(self,'layers_panel',None):self.layers_panel.load_project(p)
-        self.refresh_workflow()
+        self.sync_subtitle_position();self.refresh_workflow()
     def open_layers(self):
         self.go_stage(2)
     def ensure_layers_panel(self):
@@ -821,7 +846,21 @@ class Window(QMainWindow):
         self.push_undo();p=self.p
         p.style.update(decorated=True,italic=self.italic.isChecked(),spacing=self.spacing.value(),fade=self.sub_fade.value(),font=self.font_picker.currentFont().family(),size=self.font_size.value(),bold=self.bold.isChecked(),box=self.box.isChecked(),outline=self.outline.value(),shadow=self.shadow.value(),x=self.tx.value(),y=self.ty.value(),width=self.tw.value())
         p.mask.update(enabled=self.mask_on.isChecked(),mode=self.mask_mode.currentData(),strength=self.mask_strength.value(),x=self.mx.value(),y=self.my.value(),w=min(self.mw.value(),100-self.mx.value()),h=min(self.mh.value(),100-self.my.value()),opacity=self.opacity.value())
-        self.preview.overlay.update();self.dirty=True;self.refresh_effect_preview()
+        self.sync_subtitle_position();self.preview.update_subtitle_box();self.preview.overlay.update();self.dirty=True;self.refresh_effect_preview()
+    def sync_subtitle_position(self):
+        point=(round(self.p.style['x'],2),round(self.p.style['y'],2))
+        index=next((i for i in range(3) if self.subtitle_position.itemData(i)==point),3)
+        self.subtitle_position.blockSignals(True);self.subtitle_position.setCurrentIndex(index);self.subtitle_position.blockSignals(False)
+    def set_subtitle_position(self,*args):
+        if self.syncing or self.busy:return
+        value=self.subtitle_position.currentData()
+        if value is None:return
+        self.push_undo();self.move_subtitle(*value);self.changed(False)
+    def move_subtitle(self,x,y):
+        if self.busy:return
+        self.p.style.update(x=round(x,2),y=round(y,2),decorated=True)
+        self.syncing=True;self.tx.setValue(x);self.ty.setValue(y);self.syncing=False
+        self.sync_subtitle_position();self.dirty=True;self.preview.overlay.update();self.preview.update_subtitle_box();self.refresh_effect_preview()
     def pick_text_color(self):
         if not self.guard():return
         c=QColorDialog.getColor(QColor(self.p.style['color']),self)
@@ -852,6 +891,7 @@ class Window(QMainWindow):
         self._nominal_rates=rates
         if altered:self.player.setPlaybackRate(video_rate);self.voice_player.setPlaybackRate(voice_rate)
         self.audio.setVolume(self.p.original_gain);self.voice_audio.setVolume(min(1,self.p.voice_volume))
+        self.work_hint.setText(f'Mỗi 1 giây nguồn có {1/self.p.work_speed:.2f} giây để đọc. Thời lượng dựng: {stamp(self.p.duration/self.p.work_speed)}.\nĐổi tốc độ rồi bấm Tạo / cập nhật giọng đọc để ghép lại theo mốc mới.')
         self.speed_label.setText(f'Bản cuối: {self.p.speed:.3f}× tốc độ gốc\nThời lượng: {stamp(self.p.output_duration)}\nVoice bản cuối nhanh thêm {self.p.final_speed:.3f}× so với lúc dựng.')
         self.on_position(self.source_position())
         if altered:self.sync_voice(force=True)
