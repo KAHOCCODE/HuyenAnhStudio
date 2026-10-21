@@ -11,6 +11,10 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBo
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QVideoSink,QMediaDevices
 
 from .core import *
+from .effects_ui import EffectsDialog
+from .result_player import ResultPlayer
+from .layers_ui import LayersPanel
+from .composition import render_needed, layer_rect, SUBTITLE_PRESETS, validate_composition
 
 VOICES={'Nam Minh · Nam':'vi-VN-NamMinhNeural','Hoài My · Nữ':'vi-VN-HoaiMyNeural'}
 
@@ -29,8 +33,10 @@ class ElidedLabel(QLabel):
 
 class CPUFrames:
     """Bounded, cancellable decoder. No encoded proxy and no frame signals accumulating in Qt."""
-    def __init__(self, path, codec, width, height, start, origin=0):
+    def __init__(self, path, codec, width, height, start, origin=0, project=None):
         import queue
+        self.project=copy.deepcopy(project)
+        if project:width,height=output_size(project)
         self.frames=queue.Queue(maxsize=8);self.cancel=threading.Event()
         self.proc=None;self.error='';self.done=False;self.start_time=start;self.origin=origin
         scale=min(1,960/max(1,width),540/max(1,height))
@@ -39,15 +45,30 @@ class CPUFrames:
         self.thread.start()
     def decode(self,path,codec,start):
         import queue,tempfile
+        job=None
         try:
             args=[binary('ffmpeg'),'-hide_banner','-loglevel','error','-nostdin']+software_decode_args(codec)
-            args+=['-ss',f'{start:.6f}','-i',path,'-map','0:v:0','-an','-sn','-dn',
-                   '-vf',f'setpts=PTS-STARTPTS,fps=30,scale={self.width}:{self.height}:flags=fast_bilinear',
-                   '-pix_fmt','rgb24','-f','rawvideo','pipe:1']
+            args+=['-ss',f'{start:.6f}','-i',path]
+            if self.project:
+                job=tempfile.TemporaryDirectory(prefix='huyenanh-preview-')
+                p=copy.deepcopy(self.project);p.work_speed=p.final_speed=1
+                factor=min(1,960/p.width,540/p.height)
+                p.width=max(2,int(p.width*factor)//2*2);p.height=max(2,int(p.height*factor)//2*2)
+                p._preview_size=(self.width,self.height)
+                write_ass(Path(job.name)/'subtitles.ass',p,regions=not (p.video_effects.get('enabled') or p.sidebar.get('enabled')),canvas=(self.width,self.height))
+                write_ass(Path(job.name)/'regions.ass',p,cues=False,mirror_regions=bool(p.video_effects.get('enabled') and p.video_effects.get('flip')))
+                assets=prepare_layers(job.name,p) if p.overlays else []
+                graph=f'[0:v]scale={p.width}:{p.height},setpts=PTS+{start:.6f}/TB[live_source];'+video_filter(p,assets=assets).replace('[0:v]','[live_source]')
+                graph+=';[v]fps=30[live]'
+                (Path(job.name)/'live.txt').write_text(graph,encoding='utf-8')
+                args+=['-filter_complex_script','live.txt','-map','[live]']
+            else:
+                args+=['-map','0:v:0','-vf',f'setpts=PTS-STARTPTS,fps=30,scale={self.width}:{self.height}:flags=fast_bilinear']
+            args+=['-an','-sn','-dn','-pix_fmt','rgb24','-f','rawvideo','pipe:1']
             if self.cancel.is_set():return
             with tempfile.TemporaryFile() as errors:
                 self.proc=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=errors,stdin=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                    creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),cwd=job.name if job else None)
                 if self.cancel.is_set():self.proc.kill()
                 length=self.width*self.height*3;index=0
                 while not self.cancel.is_set():
@@ -72,6 +93,7 @@ class CPUFrames:
             if self.proc:
                 if self.proc.poll() is None:self.proc.kill();self.proc.wait()
                 if self.proc.stdout:self.proc.stdout.close()
+            if job:job.cleanup()
             self.done=True
     def close(self):
         self.cancel.set()
@@ -118,10 +140,10 @@ class Overlay(QGraphicsObject):
         painter.setRenderHint(QPainter.Antialiasing)
         if m['enabled']:
             r=self.mask_rect()
-            if m['mode']=='blur' and not self.frame.isNull():
+            if m['mode'] in ('blur','gblur','mosaic') and not self.frame.isNull():
                 src=QRectF(r.x()*self.frame.width()/p.width,r.y()*self.frame.height()/p.height,r.width()*self.frame.width()/p.width,r.height()*self.frame.height()/p.height).toRect()
-                patch=self.frame.copy(src).scaled(max(2,int(r.width()/28)),max(2,int(r.height()/28)),Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
-                painter.setRenderHint(QPainter.SmoothPixmapTransform);painter.drawImage(r,patch)
+                patch=self.frame.copy(src).scaled(max(2,int(r.width()/28)),max(2,int(r.height()/28)),Qt.IgnoreAspectRatio,Qt.FastTransformation if m['mode']=='mosaic' else Qt.SmoothTransformation)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform,m['mode']!='mosaic');painter.drawImage(r,patch)
             else:
                 color=QColor(m['color']);color.setAlphaF(m['opacity']);painter.fillRect(r,color)
             if self.win.mask_edit.isChecked():
@@ -146,17 +168,17 @@ class Overlay(QGraphicsObject):
         if st['shadow']:
             painter.save();painter.translate(st['shadow']*p.height/1080,st['shadow']*p.height/1080);painter.fillPath(path,QColor(0,0,0,190));painter.restore()
         if st['outline']:
-            painter.setPen(QPen(QColor('black'),2*st['outline']*p.height/1080,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawPath(path)
+            painter.setPen(QPen(QColor(st.get('outline_color','#000000')),2*st['outline']*p.height/1080,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.drawPath(path)
         painter.fillPath(path,QColor(st['color']))
     def paint_screen_regions(self,painter):
         p=self.win.p;t=getattr(self.win,'_screen_time',0)
         for r in p.screen_regions:
             if not r.get('enabled',True) or not r['start']<=t<r['end']:continue
             rect=QRectF(*region_pixels(p,r))
-            if r['mode']=='blur' and not self.frame.isNull():
+            if r['mode'] in ('blur','gblur','mosaic') and not self.frame.isNull():
                 src=QRectF(rect.x()*self.frame.width()/p.width,rect.y()*self.frame.height()/p.height,rect.width()*self.frame.width()/p.width,rect.height()*self.frame.height()/p.height).toRect()
-                divisor=max(2,r['strength']);patch=self.frame.copy(src).scaled(max(2,int(src.width()/divisor)),max(2,int(src.height()/divisor)),Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
-                painter.setRenderHint(QPainter.SmoothPixmapTransform);painter.drawImage(rect,patch)
+                divisor=max(2,r['strength']);patch=self.frame.copy(src).scaled(max(2,int(src.width()/divisor)),max(2,int(src.height()/divisor)),Qt.IgnoreAspectRatio,Qt.FastTransformation if r['mode']=='mosaic' else Qt.SmoothTransformation)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform,r['mode']!='mosaic');painter.drawImage(rect,patch)
             elif r['mode']=='solid':painter.fillRect(rect,QColor('#171717'))
             if not r['text']:continue
             font=QFont(p.style['font']);font.setPixelSize(max(8,round(r['size']*p.height/1080)));font.setBold(True);fm=QFontMetricsF(font);lines=[]
@@ -197,6 +219,7 @@ class Preview(QGraphicsView):
         super().__init__();self.win=win;self.setScene(QGraphicsScene(self));self.setBackgroundBrush(QColor('#090c11'))
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.video=QGraphicsPixmapItem();self.video.setTransformationMode(Qt.SmoothTransformation);self.scene().addItem(self.video);self.overlay=Overlay(win);self.scene().addItem(self.overlay)
+        self.layer_box=QGraphicsRectItem();self.layer_box.setZValue(40);self.layer_box.setPen(QPen(QColor('#7BF1DD'),2));self.scene().addItem(self.layer_box);self.layer_box.hide()
         self.pick_origin=None;self.pick_box=QGraphicsRectItem();self.pick_box.setZValue(30);self.pick_box.setPen(QPen(QColor('#73dfcc'),3));self.pick_box.setBrush(QColor(70,200,180,40));self.scene().addItem(self.pick_box);self.pick_box.hide()
         self.setMinimumSize(300,160);self.setViewport(QWidget());self.reset_size()
     def reset_size(self):
@@ -206,11 +229,48 @@ class Preview(QGraphicsView):
         image=frame if isinstance(frame,QImage) else frame.toImage()
         if image.isNull():return False
         # Paint decoded CPU pixels in a regular QWidget, avoiding a separate GPU video surface.
+        decoder=getattr(self.win,'cpu_decoder',None)
+        filtered=bool(decoder and decoder.project)
+        w,h=output_size(self.win.p) if filtered else (self.win.p.width,self.win.p.height)
         self.video.setPixmap(QPixmap.fromImage(image))
-        self.video.setTransform(QTransform.fromScale(self.win.p.width/image.width(),self.win.p.height/image.height()))
-        self.overlay.frame=image;self.overlay.update()
+        self.video.setTransform(QTransform.fromScale(w/image.width(),h/image.height()))
+        if self.sceneRect()!=QRectF(0,0,w,h):
+            self.setSceneRect(0,0,w,h);self.fitInView(self.sceneRect(),Qt.KeepAspectRatio)
+        self.overlay.setVisible(not filtered)
+        if not filtered:self.overlay.frame=image
+        self.overlay.update();self.update_layer_box()
         return True
+    def update_layer_box(self):
+        panel=getattr(self.win,'layers_panel',None);dock=getattr(self.win,'layers_dock',None)
+        v=panel.selected if panel and dock and dock.isVisible() else None
+        if not v or self.win.mask_edit.isChecked() or self.win.region_select.isChecked():self.layer_box.hide();return
+        w,h=output_size(self.win.p);self.layer_box.setRect(QRectF(*layer_rect(v,w,h)));self.layer_box.show()
+    def artwork_press(self,event):
+        panel=getattr(self.win,'layers_panel',None);dock=getattr(self.win,'layers_dock',None)
+        if not panel or not dock.isVisible() or self.win.busy or event.button()!=Qt.LeftButton or self.win.mask_edit.isChecked() or self.win.region_select.isChecked():return False
+        point=self.mapToScene(event.position().toPoint());w,h=output_size(self.win.p)
+        for i in range(len(panel.layers)-1,-1,-1):
+            v=panel.layers[i];r=QRectF(*layer_rect(v,w,h))
+            if v['enabled'] and r.contains(point):
+                panel.list.setCurrentRow(i);corner=abs(point.x()-r.right())<w*.018 and abs(point.y()-r.bottom())<h*.025
+                self.layer_drag=(point,copy.deepcopy(v),corner);event.accept();return True
+        return False
+    def wheelEvent(self,event):
+        panel=getattr(self.win,'effects_panel',None)
+        dock=getattr(self.win,'effects_dock',None)
+        if panel and dock.isVisible() and not self.win.busy and not self.win.mask_edit.isChecked() and not self.win.region_select.isChecked():
+            v=effect_settings(self.win.p.video_effects)
+            panel.direct_edit(v['x'],v['y'],max(1,min(3,v['zoom']+event.angleDelta().y()/120*.05)))
+            event.accept();return
+        super().wheelEvent(event)
     def mousePressEvent(self,event):
+        if self.artwork_press(event):return
+        panel=getattr(self.win,'effects_panel',None);dock=getattr(self.win,'effects_dock',None)
+        if panel and dock.isVisible() and not self.win.busy and event.button()==Qt.LeftButton and not self.win.mask_edit.isChecked() and not self.win.region_select.isChecked():
+            panel.canvas.source_size=(self.win.p.width,self.win.p.height)
+            panel.canvas.resize(self.viewport().size());panel.canvas.set_values(effect_settings(self.win.p.video_effects))
+            self.frame_drag=(event.position(),effect_settings(self.win.p.video_effects),panel.canvas.geometry_data()[3])
+            event.accept();return
         if getattr(self.win,'region_select',None) and self.win.region_select.isChecked() and event.button()==Qt.LeftButton:
             if self.win.busy or self.overlay.frame.isNull():return
             pos=self.mapToScene(event.position().toPoint())
@@ -218,10 +278,25 @@ class Preview(QGraphicsView):
             self.pick_origin=pos;self.pick_box.setRect(QRectF(pos,pos));self.pick_box.show();event.accept();return
         super().mousePressEvent(event)
     def mouseMoveEvent(self,event):
+        layer_drag=getattr(self,'layer_drag',None)
+        if layer_drag:
+            point,v,corner=layer_drag;delta=self.mapToScene(event.position().toPoint())-point;w,h=output_size(self.win.p)
+            if corner:values=dict(w=max(.1,min(100-v['x'],v['w']+delta.x()/w*100)),h=max(.1,min(100-v['y'],v['h']+delta.y()/h*100)))
+            else:values=dict(x=max(0,min(100-v['w'],v['x']+delta.x()/w*100)),y=max(0,min(100-v['h'],v['y']+delta.y()/h*100)))
+            self.win.layers_panel.set_geometry(values);self.update_layer_box();event.accept();return
+        drag=getattr(self,'frame_drag',None)
+        if drag:
+            point,v,motion=drag;delta=event.position()-point
+            x=v['x']+delta.x()/motion[0]*100 if abs(motion[0])>.5 else v['x']
+            y=v['y']+delta.y()/motion[1]*100 if abs(motion[1])>.5 else v['y']
+            self.win.effects_panel.direct_edit(max(0,min(100,x)),max(0,min(100,y)),v['zoom'])
+            event.accept();return
         if self.pick_origin is not None:
             rect=QRectF(self.pick_origin,self.mapToScene(event.position().toPoint())).normalized().intersected(self.sceneRect());self.pick_box.setRect(rect);event.accept();return
         super().mouseMoveEvent(event)
     def mouseReleaseEvent(self,event):
+        if getattr(self,'layer_drag',None):self.layer_drag=None;event.accept();return
+        if getattr(self,'frame_drag',None):self.frame_drag=None;event.accept();return
         if self.pick_origin is not None:
             rect=self.pick_box.rect();self.pick_origin=None;self.pick_box.hide();self.win.region_select.setChecked(False)
             if rect.width()>4 and rect.height()>4:QTimer.singleShot(0,lambda r=QRectF(rect):self.win.new_screen_region(r))
@@ -491,6 +566,9 @@ class Window(QMainWindow):
         title=QHBoxLayout();title.addWidget(QLabel('02  KHUNG XEM TRƯỚC'));title.addStretch();self.focus_button=self.button('Phóng video',self.focus_preview);title.addWidget(self.focus_button);self.preview_mode=QComboBox();self.preview_mode.addItems(['Theo tốc độ dựng','Theo tốc độ bản cuối']);self.preview_mode.currentIndexChanged.connect(self.update_rates);self.preview_mode.setMaximumWidth(170);title.addWidget(self.preview_mode);cl.addLayout(title)
         self.mask_edit=QCheckBox('Kéo vùng che');self.preview=Preview(self);cl.addWidget(self.preview,1)
         region_tools=QHBoxLayout();self.region_select=QCheckBox('Kéo chọn vùng chữ / watermark');self.region_select.toggled.connect(self.toggle_screen_selection);region_tools.addWidget(self.region_select);region_tools.addWidget(self.button('Các vùng chữ / làm mờ…',self.manage_screen_regions));cl.addLayout(region_tools)
+        workflow=QHBoxLayout()
+        for label,fn in [('1 · Che sub',lambda:self.quick_mask(1)),('2 · Lật gương',self.toggle_mirror),('3 · Chữ / logo',self.open_layers),('4 · Chèn SRT',self.import_srt)]:workflow.addWidget(self.button(label,fn))
+        cl.addLayout(workflow)
         self.empty_hint=QLabel('Kéo chữ để đặt vị trí • Nhấp đúp câu trong danh sách để sửa');self.empty_hint.setWordWrap(True);self.empty_hint.setObjectName('muted');cl.addWidget(self.empty_hint)
         bar=QHBoxLayout();bar.addWidget(self.button('− 5s',lambda:self.seek(max(0,self.source_position()/1000-5*self.play_speed()))));self.play_button=self.button('▶ Phát',self.toggle_play);bar.addWidget(self.play_button);bar.addWidget(self.button('+ 5s',lambda:self.seek(self.source_position()/1000+5*self.play_speed())));self.time_label=QLabel('00:00:00,000');bar.addWidget(self.time_label,1);cl.addLayout(bar)
         self.scrub=QSlider(Qt.Horizontal);self.scrub.sliderMoved.connect(lambda x:self.seek(x/1000));cl.addWidget(self.scrub)
@@ -499,21 +577,32 @@ class Window(QMainWindow):
         r=QHBoxLayout();self.cue_voice=QComboBox();self.cue_voice.addItem('Giọng mặc định','');[self.cue_voice.addItem(k,v) for k,v in VOICES.items()];r.addWidget(self.cue_voice);self.cue_rate=QSpinBox();self.cue_rate.setRange(-40,100);self.cue_rate.setSuffix(' %');self.cue_rate.setToolTip('Tốc độ bổ sung riêng câu này');r.addWidget(self.cue_rate);r.addWidget(self.button('Áp dụng câu',self.apply_cue,True));r.addWidget(self.button('Tạo / nghe riêng câu',self.sample));el.addLayout(r);el.addWidget(self.button('Đóng khung sửa',self.editor_dialog.hide));actions=QHBoxLayout();actions.addWidget(self.button('Sửa câu đang chọn…',self.show_editor));actions.addWidget(self.button('Bản nhẹ toàn phim…',self.make_proxy));cl.addLayout(actions);self.split.addWidget(center)
         right=QScrollArea();right.setWidgetResizable(True);right.setMinimumWidth(295);right.setMaximumWidth(375);props=QWidget();pr=QVBoxLayout(props);pr.setContentsMargins(12,0,5,0)
         pr.addWidget(QLabel('03  THIẾT LẬP'))
+        pr.addWidget(self.button('Khung hình & màu sắc…',self.video_effects_dialog))
+        pr.addWidget(self.button('Chữ / logo / biểu tượng…',self.open_layers))
+        pr.addWidget(self.button('Lật gương video',self.toggle_mirror))
+        self.effects_summary=QLabel();self.effects_summary.setWordWrap(True);pr.addWidget(self.effects_summary)
         stylebox=QGroupBox('Phụ đề');form=QFormLayout(stylebox)
         self.font_picker=QFontComboBox();self.font_picker.currentFontChanged.connect(self.visual_changed);form.addRow('Phông chữ',self.font_picker)
         self.font_size=self.spin(18,120,52,0,self.visual_changed);form.addRow('Cỡ chữ / 1080p',self.font_size)
-        self.preset=QComboBox();self.preset.addItems(['Trắng · Viền đen','Vàng · Viền đen','Trắng · Nền đen']);self.preset.currentIndexChanged.connect(self.set_preset);form.addRow('Kiểu nổi bật',self.preset)
+        self.preset=QComboBox();self.preset.addItems([name for name,values in SUBTITLE_PRESETS]);self.preset.currentIndexChanged.connect(self.set_preset);form.addRow('Kiểu nổi bật',self.preset)
         self.color=self.button('Màu chữ',self.pick_text_color);form.addRow(self.color)
         self.bold=QCheckBox('In đậm');self.bold.toggled.connect(self.visual_changed);form.addRow(self.bold)
         self.box=QCheckBox('Nền đen sau chữ');self.box.toggled.connect(self.visual_changed);form.addRow(self.box)
+        self.italic=QCheckBox('In nghiêng');self.italic.toggled.connect(self.visual_changed);form.addRow(self.italic)
+        self.spacing=self.spin(0,8,0,1,self.visual_changed);form.addRow('Giãn chữ',self.spacing)
+        self.sub_fade=self.spin(0,500,0,0,self.visual_changed);form.addRow('Hiện / ẩn mềm (ms)',self.sub_fade)
+        self.sub_outline_color=self.button('Màu viền / nền chữ',self.pick_sub_outline);form.addRow(self.sub_outline_color)
         self.outline=self.spin(0,10,3,1,self.visual_changed);form.addRow('Viền đen',self.outline)
         self.shadow=self.spin(0,10,2,1,self.visual_changed);form.addRow('Bóng chữ',self.shadow)
         self.tx=self.spin(0,100,50,1,self.visual_changed);self.ty=self.spin(0,100,88,1,self.visual_changed);self.tw=self.spin(20,100,88,1,self.visual_changed)
         form.addRow('Vị trí X (%)',self.tx);form.addRow('Vị trí Y (%)',self.ty);form.addRow('Rộng chữ (%)',self.tw);pr.addWidget(stylebox)
         maskbox=QGroupBox('Che phụ đề tiếng Trung');mf=QFormLayout(maskbox)
-        self.mask_on=QCheckBox('Bật vùng che');self.mask_on.toggled.connect(self.visual_changed);mf.addRow(self.mask_on);self.mask_mode=QComboBox();self.mask_mode.addItems(['Làm mờ vùng chọn','Phủ màu']);self.mask_mode.currentIndexChanged.connect(self.visual_changed);mf.addRow('Cách che',self.mask_mode);mf.addRow(self.mask_edit);self.mask_edit.toggled.connect(lambda:self.preview.overlay.update())
+        self.mask_on=QCheckBox('Bật vùng che');self.mask_on.toggled.connect(self.visual_changed);mf.addRow(self.mask_on);self.mask_mode=QComboBox();self.mask_mode.addItem('Mờ thường','blur');self.mask_mode.addItem('Phủ màu','solid');self.mask_mode.addItem('Mờ mềm','gblur');self.mask_mode.addItem('Ô vuông / mosaic','mosaic');self.mask_mode.currentIndexChanged.connect(self.visual_changed);mf.addRow('Cách che',self.mask_mode);mf.addRow(self.mask_edit);self.mask_edit.toggled.connect(lambda:self.preview.overlay.update());self.mask_edit.toggled.connect(self.refresh_effect_preview);self.region_select.toggled.connect(self.refresh_effect_preview)
         self.mx=self.spin(0,99,8,1,self.visual_changed);self.my=self.spin(0,99,80,1,self.visual_changed);self.mw=self.spin(1,100,84,1,self.visual_changed);self.mh=self.spin(1,100,14,1,self.visual_changed)
         for label,w in [('X (%)',self.mx),('Y (%)',self.my),('Rộng (%)',self.mw),('Cao (%)',self.mh)]:mf.addRow(label,w)
+        self.mask_strength=self.spin(1,40,20,0,self.visual_changed);mf.addRow('Cường độ che',self.mask_strength)
+        self.mask_preset=QComboBox();self.mask_preset.addItems(['Đặt vùng che nhanh…','Dải sub dưới · rộng','Dải sub dưới · hẹp','Dải sub trên','Phủ đen toàn dải dưới']);self.mask_preset.currentIndexChanged.connect(self.quick_mask);mf.addRow('Vùng mẫu',self.mask_preset)
+        mf.addRow(self.button('Thêm nhiều vùng che…',self.manage_screen_regions))
         self.opacity=self.spin(.1,1,1,2,self.visual_changed);mf.addRow('Độ đậm phủ màu',self.opacity);mf.addRow(self.button('Màu vùng che',self.pick_mask_color));pr.addWidget(maskbox)
         speedbox=QGroupBox('Tốc độ & đồng bộ');sf=QFormLayout(speedbox)
         self.work=self.spin(.25,2,1,2,self.settings_changed);self.work.setSingleStep(.05);self.final=self.spin(.25,4,1,4,self.settings_changed);self.final.setSingleStep(.05)
@@ -524,8 +613,9 @@ class Window(QMainWindow):
         self.workers=self.spin(1,6,3,0,self.settings_changed);vf.addRow('Số câu tạo cùng lúc',self.workers)
         self.maxfit=self.spin(1,3,1.6,2,self.settings_changed);vf.addRow('Giới hạn ép câu ×',self.maxfit)
         self.vol=self.spin(0,100,12,0,self.settings_changed);vf.addRow('Âm gốc (%)',self.vol)
+        self.mute_original=QCheckBox('Tắt âm thanh gốc');self.mute_original.toggled.connect(self.settings_changed);vf.addRow(self.mute_original)
         self.vvol=self.spin(0,100,100,0,self.settings_changed);vf.addRow('Voice Việt (%)',self.vvol)
-        note=QLabel('Âm gốc giảm cả tiếng nói, nhạc và hiệu ứng. Giọng TTS cần mạng.');note.setWordWrap(True);note.setObjectName('muted');vf.addRow(note)
+        note=QLabel('Tắt âm thanh gốc sẽ tắt cả lời thoại, nhạc và hiệu ứng trong video, vẫn giữ voice Việt. Bỏ chọn để khôi phục mức âm lượng trước đó. Giọng TTS cần mạng.');note.setWordWrap(True);note.setObjectName('muted');vf.addRow(note)
         self.generate_btn=self.button('Chọn lượt tạo voice…',self.show_batches,True);vf.addRow(self.generate_btn)
         vf.addRow(self.button('Tạo voice toàn dự án',self.generate))
         vf.addRow(self.button('Tạo voice các câu đang chọn',self.generate_selected))
@@ -535,11 +625,12 @@ class Window(QMainWindow):
         vf.addRow(self.button('Xóa voice các câu đang chọn',self.delete_selected_voice))
         vf.addRow(self.button('Xóa toàn bộ voice dự án',self.delete_all_voice))
         # Batch and audit actions live in the main toolbar.
-        vf.addRow(self.button('Giảm nhạc toàn video…',self.music_dialog))
+        vf.addRow(self.button('Giảm nhạc / giữ lời nói…',self.music_dialog))
+        vf.addRow(self.button('Chỉ giữ lời nói · nền 0%…',lambda:self.music_dialog(speech_only=True)))
         vf.addRow(self.button('Phát video bằng CPU',self.switch_cpu))
         vf.addRow(self.button('Xuất vùng chọn / thử 10 giây',self.render_sample));vf.addRow(self.button('Lưu voice WAV',self.save_voice));vf.addRow(self.button('Khôi phục loa / tai nghe',self.restore_audio));pr.addWidget(voicebox);pr.addStretch();
         exportbox=QGroupBox('Xuất video');ef=QFormLayout(exportbox)
-        self.export_mode=QComboBox();self.export_mode.addItem('Nhanh · tệp lớn hơn','veryfast');self.export_mode.addItem('Nhanh nhất · tệp lớn','ultrafast');self.export_mode.addItem('Nén gọn · chậm','medium')
+        self.export_mode=QComboBox();self.export_mode.addItem('Nhanh · tệp lớn hơn','veryfast');self.export_mode.addItem('Nhanh nhất · tự dùng GPU','ultrafast');self.export_mode.addItem('Nén gọn · chậm','medium')
         self.export_mode.currentIndexChanged.connect(self.export_mode_changed);ef.addRow('Chế độ',self.export_mode);pr.insertWidget(pr.count()-1,exportbox)
         for form in [form,mf,sf,vf,ef]:
             form.setRowWrapPolicy(QFormLayout.WrapLongRows);form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -587,19 +678,124 @@ class Window(QMainWindow):
         name=Path(self.p.video).name if self.p.video else 'Chưa chọn video'
         self.media_label.setText(name);self.media_label.setToolTip(self.p.video or name)
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
+        self.refresh_effect_preview()
         self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.2.11'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.font_picker.setCurrentFont(QFont(st['font']));self.font_size.setValue(st['size']);self.bold.setChecked(st['bold']);self.box.setChecked(st['box']);self.outline.setValue(st['outline']);self.shadow.setValue(st['shadow'])
-        self.tx.setValue(st['x']);self.ty.setValue(st['y']);self.tw.setValue(st['width']);self.mask_on.setChecked(m['enabled']);self.mask_mode.setCurrentIndex(0 if m['mode']=='blur' else 1)
+        self.italic.setChecked(st.get('italic',False));self.spacing.setValue(st.get('spacing',0));self.sub_fade.setValue(st.get('fade',0));self.mask_strength.setValue(m.get('strength',20))
+        self.tx.setValue(st['x']);self.ty.setValue(st['y']);self.tw.setValue(st['width']);self.mask_on.setChecked(m['enabled']);self.mask_mode.setCurrentIndex(max(0,self.mask_mode.findData(m['mode'])))
         self.mx.setValue(m['x']);self.my.setValue(m['y']);self.mw.setValue(m['w']);self.mh.setValue(m['h']);self.opacity.setValue(m['opacity'])
-        self.work.setValue(p.work_speed);self.final.setValue(p.final_speed);self.voice.setCurrentIndex(max(0,self.voice.findData(p.voice)));self.rate.setValue(p.tts_rate);self.workers.setValue(p.tts_workers);self.maxfit.setValue(p.max_fit);self.vol.setValue(p.original_volume*100);self.vvol.setValue(p.voice_volume*100)
+        self.work.setValue(p.work_speed);self.final.setValue(p.final_speed);self.voice.setCurrentIndex(max(0,self.voice.findData(p.voice)));self.rate.setValue(p.tts_rate);self.workers.setValue(p.tts_workers);self.maxfit.setValue(p.max_fit);self.vol.setValue(p.original_volume*100);self.mute_original.setChecked(p.original_muted);self.vol.setEnabled(not p.original_muted);self.vvol.setValue(p.voice_volume*100)
         self.export_mode.setCurrentIndex(max(0,self.export_mode.findData(p.export_preset)))
+        effects=effect_settings(p.video_effects)
+        w,h=output_size(p)
+        self.effects_summary.setText(f'Khung xuất: {w} × {h} · Zoom {effects["zoom"]*100:.0f}%' if effects['enabled'] else 'Khung xuất: giữ nguyên video gốc')
         self.syncing=False
+        panel=getattr(self,'effects_panel',None)
+        if panel and isValid(panel):panel.load_values(p.video_effects)
+        speed=getattr(self,'effects_speed',None)
+        if speed and isValid(speed):
+            speed.blockSignals(True);speed.setCurrentIndex(speed.findData(p.export_preset));speed.blockSignals(False)
+        if getattr(self,'layers_panel',None):self.layers_panel.load_project(p)
+        self.refresh_effect_preview()
+    def open_layers(self):
+        if not self.guard():return
+        if not self.p.video:self.error('Hãy chọn video trước khi thêm chữ / logo.');return
+        self.mask_edit.setChecked(False);self.region_select.setChecked(False)
+        if getattr(self,'effects_dock',None):self.effects_dock.hide()
+        dock=getattr(self,'layers_dock',None)
+        if dock:
+            self.layers_panel.load_project(self.p);dock.show();self.split.widget(2).hide();self.preview.update_layer_box();return
+        dock=QDockWidget('Chữ / logo / biểu tượng',self);dock.setFeatures(QDockWidget.DockWidgetClosable)
+        panel=LayersPanel(self.p,self);dock.setWidget(panel);self.addDockWidget(Qt.RightDockWidgetArea,dock)
+        self.layers_dock=dock;self.layers_panel=panel;panel.compositionChanged.connect(self.apply_composition);panel.selectionChanged.connect(self.preview.update_layer_box)
+        dock.visibilityChanged.connect(lambda visible:(self.split.widget(2).setVisible(not visible),self.preview.update_layer_box()))
+        dock.show();self.split.widget(2).hide();self.refresh_effect_preview()
+    def apply_composition(self,layers,sidebar):
+        if self.busy:return
+        draft=copy.copy(self.p);draft.overlays=layers;draft.sidebar=sidebar
+        try:validate_composition(draft)
+        except ValueError as e:self.status.setText(str(e));return
+        now=__import__('time').monotonic()
+        if [v['id'] for v in layers]!=[v['id'] for v in self.p.overlays] or now-getattr(self,'last_artwork_undo',0)>.6:self.push_undo()
+        self.last_artwork_undo=now;self.p.overlays=layers;self.p.sidebar=sidebar;self.changed(False)
+    def toggle_mirror(self):
+        if not self.guard():return
+        self.mask_edit.setChecked(False);self.region_select.setChecked(False)
+        self.push_undo();values=effect_settings(self.p.video_effects);values['flip']=not values['flip'];values['enabled']=True
+        self.p.video_effects=values;self.load_controls();self.changed(False)
+    def quick_mask(self,index):
+        if self.syncing or index==0 or not self.guard():return
+        self.push_undo();geometry={1:(0,77,100,17),2:(8,82,84,12),3:(0,3,100,18),4:(0,77,100,23)}[index]
+        self.p.mask.update(enabled=True,x=geometry[0],y=geometry[1],w=geometry[2],h=geometry[3],strength=25)
+        if index==4:self.p.mask.update(mode='solid',color='#111827',opacity=1.)
+        self.load_controls();self.mask_preset.blockSignals(True);self.mask_preset.setCurrentIndex(0);self.mask_preset.blockSignals(False);self.mask_edit.setChecked(True);self.changed(False)
+    def pick_sub_outline(self):
+        if not self.guard():return
+        c=QColorDialog.getColor(QColor(self.p.style.get('outline_color','#101010')),self)
+        if c.isValid():self.push_undo();self.p.style.update(outline_color=c.name(),decorated=True);self.changed(False)
+    def video_effects_dialog(self):
+        if not self.guard():return
+        if getattr(self,'layers_dock',None):self.layers_dock.hide()
+        old=getattr(self,'effects_dock',None)
+        if old:old.hide();old.deleteLater()
+        dock=QDockWidget('Khung hình & màu sắc · Preview trực tiếp',self)
+        dock.setFeatures(QDockWidget.DockWidgetClosable)
+        panel=EffectsDialog(self,self.p.video_effects,embedded=True)
+        speed=QComboBox();self.effects_speed=speed
+        for label,value in [('Nhanh nhất · tự dùng GPU','ultrafast'),('Nhanh · cân bằng','veryfast'),('Nén gọn · chậm','medium')]:speed.addItem(label,value)
+        speed.setCurrentIndex(speed.findData(self.p.export_preset))
+        speed.currentIndexChanged.connect(lambda:self.export_mode.setCurrentIndex(self.export_mode.findData(speed.currentData())))
+        panel.layout().insertWidget(1,QLabel('Tốc độ xuất video'))
+        panel.layout().insertWidget(2,speed)
+        dock.setWidget(panel);self.addDockWidget(Qt.RightDockWidgetArea,dock)
+        self.effects_dock=dock;self.effects_panel=panel
+        panel.settingsChanged.connect(self.apply_live_effects)
+        panel.exportRequested.connect(self.export_effects_full)
+        panel.sampleRequested.connect(self.render_effects_sample)
+        panel.rejected.connect(dock.hide)
+        self.split.widget(2).hide()
+        dock.visibilityChanged.connect(lambda visible:self.split.widget(2).setVisible(not visible))
+        dock.show();self.refresh_effect_preview()
+    def apply_live_effects(self,values):
+        if self.busy:return
+        if values==effect_settings(self.p.video_effects):return
+        self.push_undo();self.p.video_effects=values;self.load_controls();self.changed(False)
+        self.refresh_effect_preview()
+    def refresh_effect_preview(self,*args):
+        if not hasattr(self,'cpu_seek_timer') or not self.p.video or self.busy:return
+        enabled=render_needed(self.p)
+        if enabled and not self.cpu_mode:self.switch_cpu()
+        elif self.cpu_mode:self.cpu_seek(self.source_position()/1000)
+    def export_effects_full(self):
+        if not self.guard():return
+        choices=['Giữ âm lượng gốc (vẫn tắt nếu đã chọn tắt âm)', 'Dùng thiết lập âm gốc của dự án', 'Ghép voice Việt và âm gốc theo dự án']
+        mode,ok=QInputDialog.getItem(self,'Âm thanh bản hoàn chỉnh','Áp dụng khung cho toàn bộ video đang mở. Chọn âm thanh:',choices,1 if self.p.original_muted else 0,False)
+        if not ok:return
+        self.export(voice_choice=QMessageBox.Yes if mode==choices[2] else QMessageBox.No,
+                    preserve_original=mode==choices[0],show_result=True)
+    def show_full_result(self,path):
+        self.status.setText('Đã xuất toàn bộ: '+Path(path).name);self.progress.setValue(100);self.log('Đã xuất toàn bộ: '+path)
+        dialog=ResultPlayer(path,self)
+        dialog.exec()
+        dialog.deleteLater()
+    def render_effects_sample(self):
+        if not self.guard():return
+        if self.editor_dirty and not self.commit_editor():return
+        try:check_project(self.p)
+        except Exception as e:self.error(str(e));return
+        p=copy.deepcopy(self.p);cache=self.cache;path=cache/('Khung-hinh-'+uuid.uuid4().hex[:6]+'.mp4')
+        start=max(0,self.source_position()/1000)/p.speed
+        voice=voice_ready(p,cache)
+        self.start_job(lambda c,r:export_video(p,cache,path,c,r,with_voice=voice,preview=start,allow_partial=True),self.export_done,'Xem thử khung hình 10 giây')
     def export_mode_changed(self):
         if self.syncing:return
         if self.busy:self.load_controls();return
         self.p.export_preset=self.export_mode.currentData();self.dirty=True
+        speed=getattr(self,'effects_speed',None)
+        if speed and isValid(speed):
+            speed.blockSignals(True);speed.setCurrentIndex(speed.findData(self.p.export_preset));speed.blockSignals(False)
     def pull_visual_controls(self):
         self.syncing=True
         for widget,key in [(self.tx,'x'),(self.ty,'y')]:widget.setValue(self.p.style[key])
@@ -609,9 +805,9 @@ class Window(QMainWindow):
         if self.syncing:return
         if self.busy:self.load_controls();return
         self.push_undo();p=self.p
-        p.style.update(font=self.font_picker.currentFont().family(),size=self.font_size.value(),bold=self.bold.isChecked(),box=self.box.isChecked(),outline=self.outline.value(),shadow=self.shadow.value(),x=self.tx.value(),y=self.ty.value(),width=self.tw.value())
-        p.mask.update(enabled=self.mask_on.isChecked(),mode='blur' if self.mask_mode.currentIndex()==0 else 'solid',x=self.mx.value(),y=self.my.value(),w=min(self.mw.value(),100-self.mx.value()),h=min(self.mh.value(),100-self.my.value()),opacity=self.opacity.value())
-        self.preview.overlay.update();self.dirty=True
+        p.style.update(decorated=True,italic=self.italic.isChecked(),spacing=self.spacing.value(),fade=self.sub_fade.value(),font=self.font_picker.currentFont().family(),size=self.font_size.value(),bold=self.bold.isChecked(),box=self.box.isChecked(),outline=self.outline.value(),shadow=self.shadow.value(),x=self.tx.value(),y=self.ty.value(),width=self.tw.value())
+        p.mask.update(enabled=self.mask_on.isChecked(),mode=self.mask_mode.currentData(),strength=self.mask_strength.value(),x=self.mx.value(),y=self.my.value(),w=min(self.mw.value(),100-self.mx.value()),h=min(self.mh.value(),100-self.my.value()),opacity=self.opacity.value())
+        self.preview.overlay.update();self.dirty=True;self.refresh_effect_preview()
     def pick_text_color(self):
         if not self.guard():return
         c=QColorDialog.getColor(QColor(self.p.style['color']),self)
@@ -627,7 +823,7 @@ class Window(QMainWindow):
     def settings_changed(self,*args):
         if self.syncing:return
         if self.busy:self.load_controls();return
-        self.push_undo();self.p.work_speed=self.work.value();self.p.final_speed=self.final.value() if self.final.value()!=round(self.p.final_speed,4) else self.p.final_speed;self.p.voice=self.voice.currentData();self.p.tts_rate=round(self.rate.value());self.p.tts_workers=round(self.workers.value());self.p.max_fit=self.maxfit.value();self.p.original_volume=self.vol.value()/100;self.p.voice_volume=self.vvol.value()/100;self.changed()
+        self.push_undo();self.p.work_speed=self.work.value();self.p.final_speed=self.final.value() if self.final.value()!=round(self.p.final_speed,4) else self.p.final_speed;self.p.voice=self.voice.currentData();self.p.tts_rate=round(self.rate.value());self.p.tts_workers=round(self.workers.value());self.p.max_fit=self.maxfit.value();self.p.original_volume=self.vol.value()/100;self.p.original_muted=self.mute_original.isChecked();self.vol.setEnabled(not self.p.original_muted);self.p.voice_volume=self.vvol.value()/100;self.changed()
     def restore_speed(self):
         if not self.guard():return
         self.push_undo();self.p.final_speed=1/self.p.work_speed
@@ -639,7 +835,7 @@ class Window(QMainWindow):
         altered=getattr(self,'_nominal_rates',None)!=rates
         self._nominal_rates=rates
         if altered:self.player.setPlaybackRate(video_rate);self.voice_player.setPlaybackRate(voice_rate)
-        self.audio.setVolume(self.p.original_volume);self.voice_audio.setVolume(min(1,self.p.voice_volume))
+        self.audio.setVolume(self.p.original_gain);self.voice_audio.setVolume(min(1,self.p.voice_volume))
         self.speed_label.setText(f'Bản cuối: {self.p.speed:.3f}× tốc độ gốc\nThời lượng: {stamp(self.p.output_duration)}\nVoice bản cuối nhanh thêm {self.p.final_speed:.3f}× so với lúc dựng.')
         self.on_position(self.source_position())
         if altered:self.sync_voice(force=True)
@@ -661,7 +857,7 @@ class Window(QMainWindow):
         if device.isNull():self.error('Windows chưa có thiết bị phát âm thanh khả dụng. Chọn loa/tai nghe trong cài đặt âm thanh rồi thử lại.');return
         was_playing=self.player.playbackState()==QMediaPlayer.PlayingState
         self.player.pause();self.voice_player.pause();self.sample_player.stop()
-        for player,attr,volume in [(self.player,'audio',self.p.original_volume),(self.voice_player,'voice_audio',min(1,self.p.voice_volume)),(self.sample_player,'sample_audio',1.)]:
+        for player,attr,volume in [(self.player,'audio',self.p.original_gain),(self.voice_player,'voice_audio',min(1,self.p.voice_volume)),(self.sample_player,'sample_audio',1.)]:
             old=getattr(self,attr);new=QAudioOutput(device,self);new.setVolume(volume);player.setAudioOutput(new);setattr(self,attr,new);old.deleteLater()
         self.status.setText('Đã chọn lại âm thanh: '+device.description());self.log(self.status.text())
         if was_playing:self.player.play()
@@ -707,27 +903,29 @@ class Window(QMainWindow):
         path=Path(self.p.music_clean.get('preview',''))
         if not path.is_file():raise ValueError('Thiếu bản xem giảm nhạc. Mở Giảm nhạc và bấm xử lý / tiếp tục để ghép lại.')
         return path
-    def music_dialog(self,checked=False,sample=None):
+    def music_dialog(self,checked=False,sample=None,speech_only=False):
         if not self.guard():return
         if not self.p.video or not self.p.has_audio:self.error('Hãy mở video có âm thanh trước.');return
         self.player.pause();self.voice_player.pause();self.sample_player.stop()
-        dialog=QDialog(self);dialog.setWindowTitle('Giảm nhạc toàn video');dialog.resize(570,360)
+        dialog=QDialog(self);dialog.setWindowTitle('Giữ lời nói / giảm nhạc');dialog.resize(570,360)
         layout=QVBoxLayout(dialog)
         note=QLabel('AI ưu tiên giữ tiếng nói và giảm nhạc. Một số hiệu ứng có thể mất.\nGiữ một phần âm nền giúp còn hiệu ứng nhưng cũng còn nhạc.\nXử lý một lần; dùng lại khi phát và xuất, không phụ thuộc các lô voice Việt.')
         note.setWordWrap(True);layout.addWidget(note)
+        quality_note=QLabel('Chỉ giữ lời nói đặt nền 0%. AI có thể còn sót nhạc hoặc làm mất một phần lời; hãy nghe đoạn thử trước. Đây không phải chế độ tắt toàn bộ âm gốc.');quality_note.setWordWrap(True);layout.addWidget(quality_note)
+        polish=QCheckBox('Lọc nhẹ tiếng ù / nhiễu sau tách (có thể làm giọng mỏng hơn)');polish.setChecked((sample or self.p.music_clean).get('polish',False));layout.addWidget(polish)
         state=QLabel('Hiện đang dùng: '+('âm đã giảm nhạc' if self.p.music_clean.get('enabled') else 'âm gốc'));layout.addWidget(state)
-        form=QFormLayout();retain=QSpinBox();retain.setRange(0,50);retain.setSuffix(' %');retain.setValue(round((sample or self.p.music_clean).get('retain',.12)*100));form.addRow('Giữ lại âm nền',retain);threads=QSpinBox();threads.setRange(1,8);threads.setValue(self.p.music_threads);form.addRow('Luồng CPU giảm nhạc',threads);backend=QComboBox();backend.addItem('CPU · ONNX','cpu');backend.addItem('GPU NVIDIA · DirectML (thử nghiệm)','dml');backend.setCurrentIndex(1 if self.p.music_backend=='dml' else 0);form.addRow('Bộ xử lý',backend);layout.addLayout(form)
+        form=QFormLayout();retain=QSpinBox();retain.setRange(0,50);retain.setSuffix(' %');retain.setValue(0 if speech_only else round((sample or self.p.music_clean).get('retain',.12)*100));form.addRow('Giữ lại âm nền',retain);audio_mode=QComboBox();audio_mode.addItems(['Chỉ giữ lời nói · nền 0%','Giữ lời + một phần nền']);audio_mode.setCurrentIndex(0 if retain.value()==0 else 1);audio_mode.currentIndexChanged.connect(lambda i:retain.setValue(0 if i==0 else 12));form.addRow('Mục tiêu',audio_mode);threads=QSpinBox();threads.setRange(1,8);threads.setValue(self.p.music_threads);form.addRow('Luồng CPU giảm nhạc',threads);backend=QComboBox();backend.addItem('CPU · ONNX','cpu');backend.addItem('GPU NVIDIA · DirectML (thử nghiệm)','dml');backend.setCurrentIndex(1 if self.p.music_backend=='dml' else 0);form.addRow('Bộ xử lý',backend);layout.addLayout(form)
         tip=QLabel('0%: giảm nhạc mạnh hơn. 10–20%: giữ thêm nền và hiệu ứng.\nAI chỉ khởi động một lần cho mỗi lượt; giữ nguyên các đoạn đã xong.\nGPU: chạy CAI-GPU-GTX.cmd trước, rồi thử 30 giây.\nLuồng CPU: mặc định 2; thử 4 nếu máy còn dư CPU. Nhiều hơn chưa chắc nhanh hơn.\nThanh Âm gốc (%) điều chỉnh âm lượng kết quả khi xem / xuất.')
         tip.setWordWrap(True);layout.addWidget(tip)
         def begin(full):
-            value=retain.value()/100;count=threads.value();device=backend.currentData();position=self.source_position();dialog.accept()
+            value=retain.value()/100;enhance=polish.isChecked();count=threads.value();device=backend.currentData();position=self.source_position();dialog.accept()
             if count!=self.p.music_threads:self.push_undo();self.p.music_threads=count;self.changed(False)
             if device!=self.p.music_backend:self.push_undo();self.p.music_backend=device;self.changed(False)
             if not self.save():return
             project=copy.deepcopy(self.p);cache=self.cache;base=self.available_full_proxy() or project.video
             start=min(max(0,position/1000),max(0,project.duration-30));segment=None if full else (start,min(project.duration,start+30))
             def work(cancel,report):
-                result=build_music_reduction(project,cache,cancel,report,value,segment,fresh=not full)
+                result=build_music_reduction(project,cache,cancel,report,value,segment,fresh=not full,polish=enhance)
                 return make_music_preview(project,result,base,cancel,report) if full else result
             def done(result):
                 if full:
@@ -795,7 +993,9 @@ class Window(QMainWindow):
             origin=self._preview_offset_ms/1000
             path=self.player.source().toLocalFile() if self._preview_end is not None else self.p.video
             codec='h264' if self._preview_end is not None else self.p.video_codec
-            self.cpu_decoder=CPUFrames(path,codec,self.p.width,self.p.height,max(0,self._cpu_seek_target-origin),origin)
+            filtered=render_needed(self.p) and not self.mask_edit.isChecked() and not self.region_select.isChecked()
+            if filtered:path=self.p.video;codec=self.p.video_codec;origin=0
+            self.cpu_decoder=CPUFrames(path,codec,self.p.width,self.p.height,max(0,self._cpu_seek_target-origin),origin,self.p if filtered else None)
     def preview_clock(self):
         # Speech is the visual clock whenever available: never seek speech to chase frames.
         if (getattr(self,'voice_is_ready',False) and not self.busy
@@ -1061,7 +1261,7 @@ class Window(QMainWindow):
         geometry={}
         for key,label in [('x','X (%)'),('y','Y (%)'),('w','Rộng (%)'),('h','Cao (%)')]:
             spin=QDoubleSpinBox();spin.setRange(0 if key in ('x','y') else .1,100);spin.setDecimals(2);spin.setValue(r[key]);geometry[key]=spin;form.addRow(label,spin)
-        mode=QComboBox();mode.addItem('Làm mờ','blur');mode.addItem('Phủ nền tối','solid');mode.addItem('Chỉ thêm chữ','none');mode.setCurrentIndex(mode.findData(r['mode']));form.addRow('Che chữ / watermark',mode)
+        mode=QComboBox();mode.addItem('Làm mờ','blur');mode.addItem('Phủ nền tối','solid');mode.addItem('Mờ mềm','gblur');mode.addItem('Ô vuông / mosaic','mosaic');mode.addItem('Chỉ thêm chữ','none');mode.setCurrentIndex(mode.findData(r['mode']));form.addRow('Che chữ / watermark',mode)
         strength=QSpinBox();strength.setRange(1,40);strength.setValue(r['strength']);form.addRow('Độ mờ',strength)
         size=QSpinBox();size.setRange(8,200);size.setValue(r['size']);form.addRow('Cỡ chữ (theo 1080p)',size)
         color=[r['color']]
@@ -1258,6 +1458,7 @@ class Window(QMainWindow):
     def start_job(self,fn,done,label):
         if not self.guard():return
         self.player.pause();self.voice_player.stop();self.voice_player.setSource(QUrl());self.sample_player.stop();self.busy=True;self.cancel_btn.setEnabled(True);self.progress.setValue(0);self.status.setText(label);self.log(label)
+        self.close_cpu()
         self.worker=Worker(fn);self.worker.progress.connect(self.job_progress)
         self.pending_result=None;self.pending_error=None
         self.worker.result.connect(lambda result:setattr(self,'pending_result',result));self.worker.failed.connect(lambda error:setattr(self,'pending_error',error))
@@ -1265,6 +1466,7 @@ class Window(QMainWindow):
         def finished():
             self.worker=None
             self.busy=False;self.cancel_btn.setEnabled(False)
+            self.refresh_effect_preview()
             if self.pending_error:self.status.setText('Đã dừng / có lỗi');self.error(self.pending_error)
             else:
                 try:done(self.pending_result)
@@ -1525,26 +1727,30 @@ class Window(QMainWindow):
             row=result['sample'];self.rows[id]=row;self.model.refresh();self.timeline.update()
             src=row['path'];self.sample_player.setSource(QUrl.fromLocalFile(src));self.sample_player.setPlaybackRate(self.p.final_speed if self.preview_mode.currentIndex()==1 else 1);self.sample_player.play();self.status.setText(f'Nghe câu đã khớp ({row["factor"]:.2f}×)' if row['ok'] else f'Câu quá dài ({row["factor"]:.2f}×) — nghe đủ lời ở tốc độ giới hạn')
         self.start_job(lambda c,r:generate_voices(p,self.cache,c,r,id),done,'Tạo giọng câu đang chọn')
-    def export(self,checked=False,voice_choice=None):
+    def export(self,checked=False,voice_choice=None,preserve_original=False,show_result=False):
         if not self.guard():return
-        if not self.save():return
+        if self.editor_dirty and not self.commit_editor():return
         mode=voice_choice if voice_choice is not None else QMessageBox.question(self,'Xuất video','Xuất kèm voice tiếng Việt?\nCó: video + sub cứng + voice.\nKhông: video + sub cứng + âm gốc theo mức đã chọn.',QMessageBox.Yes|QMessageBox.No|QMessageBox.Cancel)
         if mode==QMessageBox.Cancel:return
         voice=mode==QMessageBox.Yes
         try:
             check_project(self.p)
             if voice and not voice_ready(self.p,self.cache):
-                if cached_voice_exists(self.p,self.cache):self.rebuild_existing(after=lambda:self.export(voice_choice=mode));return
+                if cached_voice_exists(self.p,self.cache):self.rebuild_existing(after=lambda:self.export(voice_choice=mode,preserve_original=preserve_original,show_result=show_result));return
                 raise ValueError('Chưa có voice. Chọn vùng và tạo voice trước.')
         except Exception as e:self.error(str(e));return
         if voice and not voice_complete(self.p,self.cache):
             m=load_manifest(self.cache)
             message=f'Bản voice hiện có: {len(m.get("rows",[]))} câu; {m.get("missing_count",0)} câu thiếu; {m.get("long_count",0)} câu tràn mốc.\nCâu dài có thể chồng lời; lời vượt hết video sẽ bị giới hạn theo độ dài video.\nXuất bản đang có để xem / chỉnh tiếp?'
             if QMessageBox.question(self,'Xuất bản voice đang có',message)!=QMessageBox.Yes:return
-        path,_=QFileDialog.getSaveFileName(self,'Xuất video MP4','Video-Viet.mp4','Video MP4 (*.mp4)',options=QFileDialog.DontConfirmOverwrite)
+        path,_=QFileDialog.getSaveFileName(self,'Xuất toàn bộ video MP4',str(Path(self.p.video).with_name(Path(self.p.video).stem+'-da-chinh.mp4')) if self.p.video else 'Video-Viet.mp4','Video MP4 (*.mp4)',options=QFileDialog.DontConfirmOverwrite)
         if not path:return
         if not path.lower().endswith('.mp4'):path+='.mp4'
-        p=copy.deepcopy(self.p);self.start_job(lambda c,r:export_video(p,self.cache,path,c,r,voice,allow_partial=True),self.export_done,'Xuất video hoàn chỉnh')
+        p=copy.deepcopy(self.p)
+        if preserve_original:p.original_volume=1.0;p.music_clean={}
+        cache=self.cache
+        self.start_job(lambda c,r:export_video(p,cache,path,c,r,voice,allow_partial=True,preview=None,segment=None),
+                       self.show_full_result if show_result else self.export_done,'Xuất toàn bộ video · '+stamp(p.output_duration))
     def render_sample(self):
         if not self.guard():return
         if self.editor_dirty and not self.commit_editor():return

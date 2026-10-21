@@ -87,6 +87,7 @@ App dùng thay đổi tốc độ âm thanh có giữ cao độ bằng FFmpeg; �
 
 - Khi voice đã đầy đủ, bấm **Phát** để nghe cùng video.
 - **Âm gốc** giảm toàn bộ âm thanh gốc, gồm giọng Trung, nhạc và hiệu ứng. Bản này chưa tách riêng giọng Trung khỏi nhạc. Đặt 0% để tắt toàn bộ âm gốc.
+- **Tắt âm thanh gốc** tắt toàn bộ lời thoại, nhạc và hiệu ứng của video khi xem và xuất, kể cả âm đã xử lý giảm nhạc. Voice Việt vẫn giữ riêng. Bỏ chọn để khôi phục mức âm lượng trước đó; trạng thái này được lưu cùng dự án.
 - **Voice Việt** chỉnh âm lượng lớp lồng tiếng.
 - **Xuất thử 10 giây** bắt đầu tại vị trí đang xem, theo tốc độ bản cuối; có voice nếu bản voice đang hợp lệ. Nếu chưa có voice hợp lệ, đoạn thử chỉ chứa sub và âm gốc theo thiết lập.
 - **Xuất video** cho chọn có hoặc không kèm voice. Xuất MP4 H.264/AAC với sub được ghi cứng vào hình.
@@ -129,3 +130,78 @@ Muốn tự chạy kiểm tra dành cho phát triển:
 - Qt video: https://doc.qt.io/qtforpython-6/PySide6/QtMultimediaWidgets/QGraphicsVideoItem.html
 
 Ảnh `Giao-dien.png` được chụp từ giao diện thật của ứng dụng, dùng nền minh họa và ba câu mẫu tự tạo; không phải video hay SRT của người dùng.
+
+## Tùy chỉnh khung hình và màu sắc
+
+Trong **03 THIẾT LẬP**, mở **Khung hình & màu sắc…**. Các ô nhập luôn thao tác được; thay đổi thông số hoặc kéo hình sẽ tự bật tùy chỉnh.
+
+- **Kích thước xuất:** giữ kích thước gốc, 16:9 (1920×1080), 9:16 (1080×1920), 1:1 (1080×1080), 4:3 (1440×1080), hoặc tự nhập rộng/cao. Kích thước tự nhập phải là số chẵn, từ 64 đến 7680 px.
+- **Zoom:** chọn nhanh 110% / 115% hoặc nhập từ 1 đến 3 lần. X/Y điều chỉnh vị trí lấy hình; 50/50 là chính giữa.
+- **Cách đặt video:** lấp đầy và cắt mép; giữ đủ hình trên nền màu; nền video làm mờ; hoặc nền mờ kèm viền động. Với nền mờ, có thể chỉnh khoảng nền và độ mờ. Viền động nằm quanh khung xuất.
+- **Lật ngang:** bật thủ công khi phù hợp nội dung. Chữ có sẵn trong phim cũng bị lật; phụ đề Việt và chữ thay thế do ứng dụng thêm vẫn đọc bình thường.
+- **Màu sắc:** chỉnh độ bão hòa, tương phản, độ sáng và tông lạnh/ấm. Giá trị trung tính lần lượt là 1, 1, 0, 0.
+- **Lớp phủ:** sương sáng nhẹ, bụi sáng chuyển động hoặc ánh sáng chuyển động. Cường độ từ 0 đến 0,3; đặt 0 để bỏ tác động.
+
+Bấm **Xem thử 10 giây** để áp dụng thiết lập và xuất đoạn thử từ vị trí đang xem. Đoạn thử có voice nếu voice đã ghép còn khớp với dự án; nếu chưa có, dùng âm gốc theo mức âm lượng đã chọn. Preview chính cũng hiển thị thay đổi khung hình, màu và hiệu ứng khi phát hoặc dừng video. Khi bật chế độ đặt vùng che/chọn vùng chữ, preview tạm trở về hình nguồn để đặt tọa độ chính xác; tắt chế độ đó để xem lại hiệu ứng.
+
+Các thiết lập được lưu cùng dự án và có thể hoàn tác. Thay đổi tự áp dụng vào dự án đang mở; **Đặt lại** đưa về mặc định, **Đóng** chỉ đóng bảng chỉnh. Dùng hoàn tác nếu cần bỏ thay đổi. Tắt tùy chỉnh để dùng lại luồng xuất gốc. Có thể xuất video chỉ chỉnh hình mà không cần SRT; chọn **Không** khi được hỏi xuất kèm voice.
+
+Vùng che xử lý trước khi đổi bố cục. Chữ thay thế trên hình đi theo nội dung nên có thể bị cắt nếu nằm ngoài vùng crop. Phụ đề SRT được vẽ sau khi đổi khung và chỉnh màu, theo vị trí phần trăm của khung xuất, nên không bị lật hay crop theo video nguồn.
+
+### Chỉnh trực tiếp trên video
+
+- Mở **Khung hình & màu sắc…** để hiện bảng chỉnh bên phải, nằm trong cửa sổ app.
+- Giữ chuột trái kéo ngay trên preview chính để đổi bố cục. Với khung vừa khít ở zoom 100%, tăng zoom hoặc chọn tỷ lệ khác để có khoảng dịch hình.
+- Cuộn chuột trên preview để zoom. X/Y/Zoom cập nhật theo thao tác và dùng cho bản xuất.
+- Preview cập nhật sau một nhịp xử lý ngắn, cả khi video đang dừng. Bản xem được dựng ở độ phân giải tối đa 960×540 để giảm tải; bản xuất vẫn dùng kích thước đã chọn. Không cần xuất thử 10 giây chỉ để thấy thay đổi.
+- **Lưu thiết lập** áp dụng vào trạng thái dự án đang mở. **Đóng** giữ thay đổi; dùng **Lưu dự án** để giữ cho lần mở sau. Bỏ tích bật tùy chỉnh để trở lại hình gốc.
+
+### Ba mức xuất và tốc độ xử lý
+
+Bảng chỉnh dùng chung lựa chọn tốc độ xuất của app: `ultrafast` (nhanh nhất), `veryfast` và `medium`. Mức nhanh hơn thường tạo tệp lớn hơn. Cả ba mức đều áp dụng khi xuất video đã đổi khung. Xuất thử 10 giây dùng `ultrafast`.
+
+Bộ giải mã preview tạm dừng trong lúc xuất để tránh tranh tài nguyên. Nền mờ được xử lý ở kích thước nhỏ rồi phóng lên; các bước chỉnh màu trung tính được bỏ qua. Thời gian xuất vẫn phụ thuộc độ dài, độ phân giải, hiệu ứng và CPU; chọn mức nhanh nhất nếu ưu tiên thời gian.
+
+### Áp dụng vào video hoàn chỉnh
+
+Sau khi chỉnh khung, bấm **Áp dụng & xuất toàn bộ video** ngay dưới khung chỉnh. Chọn giữ nguyên âm lượng video gốc, dùng âm lượng theo dự án, hoặc ghép voice Việt. Chọn nơi lưu MP4 mới; ứng dụng xuất từ đầu đến cuối với khung, màu và hiệu ứng đã chọn, không phụ thuộc vị trí con trỏ hoặc vùng timeline. Không cần có SRT hay voice nếu chọn âm gốc, và không bắt buộc lưu tệp dự án trước khi xuất.
+
+Xuất xong, bản hoàn chỉnh được mở trong cửa sổ phát của ứng dụng, có thanh tua và nút phát/tạm dừng. Bấm **Về chỉnh sửa** để trở lại dự án gốc. Video nguồn không bị ghi đè và hiệu ứng không bị áp dụng hai lần lên bản đã xuất. **Lưu thiết lập** chỉ lưu thay đổi vào trạng thái dự án đang mở, không dựng lại video; **Xem thử 10 giây** chỉ tạo đoạn thử. Dùng **Lưu dự án** nếu muốn giữ thiết lập cho lần mở sau.
+
+### Xuất nhanh bằng GPU
+
+Mức **Nhanh nhất · tự dùng GPU** kiểm tra NVIDIA NVENC, Intel Quick Sync rồi AMD AMF bằng một lượt mã hóa ngắn ở đúng kích thước xuất. Nếu dùng được, app xuất H.264 bằng bộ mã hóa đó; nếu không, dùng CPU ultrafast và ghi lý do vào nhật ký. Hai mức còn lại tiếp tục dùng CPU như trước. Xuất thử cũng kiểm tra GPU.
+
+Tiến độ hiển thị tên bộ mã hóa, tốc độ thực tế (ví dụ 2× nghĩa là xử lý khoảng hai giây video đầu ra mỗi giây) và thời gian còn lại. Ước tính bắt đầu sau 15 giây, vẫn có thể thay đổi theo cảnh. GPU chỉ tăng tốc mã hóa; vùng che, phụ đề, đổi khung và hiệu ứng vẫn xử lý trên CPU. Chất lượng và dung lượng tệp giữa các bộ mã hóa có thể khác nhau. Không có cam kết thời gian xuất cố định.
+
+## Che sub → lật hình → chữ, logo và phụ đề Việt
+
+Thanh thao tác bên dưới preview có bốn bước: **1 · Che sub**, **2 · Lật gương**, **3 · Chữ / logo**, **4 · Chèn SRT**. Vùng che được dựng trên video nguồn trước khi lật. Chữ, logo, biểu tượng thêm bằng bảng mới và phụ đề SRT được ghép trên khung xuất sau bước lật, nên luôn đúng chiều.
+
+### Che phụ đề gốc
+
+Trong **Che phụ đề tiếng Trung**, chọn mờ thường, mờ mềm, ô vuông/mosaic hoặc phủ màu; chỉnh cường độ, màu, độ đậm và vị trí. Có vùng mẫu cho dải dưới rộng/hẹp, dải trên và dải tối dưới hình. Bật **Kéo vùng che** để chỉnh trên tọa độ nguồn; tắt để xem bản dựng đã lật/đổi khung. Nút **2 · Lật gương** tự thoát chế độ đặt vùng che để hiển thị ngay kết quả lật.
+
+**Thêm nhiều vùng che…** quản lý các vùng riêng, có thời gian hiện. Để chỉ che chữ, để trống nội dung chữ thay thế. Mờ hay mosaic chỉ che nội dung bằng hiệu ứng; không phục hồi được hình thật phía sau chữ.
+
+### Chữ / logo / biểu tượng
+
+Bảng này nằm trong app, tự áp dụng vào preview và bản xuất. Có thể thêm nhiều lớp chữ, ảnh logo PNG/JPG/WebP/BMP và năm biểu tượng vẽ sẵn: trái tim, ngôi sao, nút phát, nốt nhạc, thông tin. Mỗi lớp có tên, bật/tắt, mốc đầu/cuối theo giây nguồn, vị trí, kích thước và độ hiện. Dùng **Hiện suốt video** cho nhận diện kênh.
+
+- Chữ có phông, cỡ, đậm, căn trái/giữa/phải, màu, viền, bóng, nền, độ hiện nền, bo góc và vạch dọc. Các mẫu gồm trắng có viền, thông báo vạch đỏ, vàng, nhãn nền tối và xanh ngọc. Hai dòng mẫu “Phim được làm bởi AI / Khán giả trên 18+” có thể sửa tự do, giống ảnh mẫu đã gửi.
+- Chọn lớp rồi kéo ngay trên preview để di chuyển; kéo vùng góc dưới phải để đổi kích thước. Nới chiều cao/rộng nếu chữ bị cắt trong khung. Tọa độ lớp tính theo toàn khung xuất, không đi theo crop hay lật của hình nguồn.
+- Danh sách hỗ trợ nhân đôi, xóa, lên/xuống. Lớp ở cuối danh sách được vẽ trên các lớp trước. Phụ đề SRT luôn nằm trên lớp trang trí.
+- **Dải bên** chừa một phần khung xuất bên phải hoặc bên trái, có màu và độ rộng 10–40%. Bấm **Đặt lớp đang chọn vào dải bên** để chuyển chữ/logo vào đó; việc này cũng áp dụng cho biểu tượng. Kích thước xuất không đổi. Nếu chưa bật tùy chỉnh khung, video giữ đủ hình trong phần còn lại; nếu đã bật, cách crop/fit/nền mờ hiện chọn vẫn được dùng.
+- Ảnh logo được tham chiếu theo đường dẫn gốc. Khi chuyển dự án sang máy khác, giữ ảnh hoặc chọn lại ảnh qua **Chọn / thay ảnh logo**. Các lớp và dải bên được lưu trong `.ha.json`, hỗ trợ hoàn tác.
+
+Chữ/logo tĩnh được vẽ thành ảnh một lần cho mỗi lần dựng, ghép các lớp liền nhau có cùng mốc thời gian để giảm số bước xử lý. Preview dùng cùng thứ tự ghép với bản xuất, ở độ phân giải thấp hơn.
+
+### Phụ đề Việt
+
+Nhập SRT bằng **4 · Chèn SRT**, rồi chỉnh tại **Phụ đề**. Có sáu mẫu: trắng viền đen, vàng viền đen, trắng nền tối, trắng ngà điện ảnh, xanh ngọc viền tím, hồng nhạt nền tím. Có thể chỉnh màu viền/nền, in nghiêng, giãn chữ và thời gian hiện/ẩn mềm 0–500 ms. Chữ được dựng sau bước lật. Khi có dải bên, vị trí và vùng xuống dòng của phụ đề dựa trên phần video còn lại.
+
+### Chỉ giữ lời nói
+
+**Chỉ giữ lời nói · nền 0%…** mở bộ tách nhạc với mức trộn lại nền bằng 0. Phần giọng đã tách được dùng trực tiếp, không đọc và trộn lại toàn bộ âm gốc thêm lần nữa. Có tùy chọn lọc nhẹ tiếng ù/nhiễu sau tách; nên nghe thử vì lọc có thể làm giọng mỏng đi. Các đoạn AI đã xử lý được dùng lại khi đổi mức giữ nền hoặc bật lọc, không chạy lại AI cho đoạn đã hoàn tất.
+
+Đây vẫn là bộ tách AI đang dùng, không có cam kết xóa sạch mọi tiếng động hay giữ nguyên hoàn toàn lời thoại. Hãy dùng lượt thử 30 giây và so sánh âm gốc/kết quả trước khi xử lý toàn bộ. **Tắt âm thanh gốc** là lựa chọn riêng để bỏ toàn bộ tiếng trong video, chỉ giữ voice Việt khi xuất kèm voice.

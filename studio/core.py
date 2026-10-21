@@ -4,6 +4,8 @@ import asyncio, hashlib, json, math, os, re, shutil, subprocess, threading, time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Callable
+from .video_effects import settings as effect_settings, output_size, picture_filter
+from .composition import validate_composition, prepare_layers, artwork_filter, sidebar_settings
 
 RATE = 24000
 ROOT = Path(__file__).resolve().parent.parent
@@ -37,16 +39,22 @@ class Project:
     batch_reviewed: dict = field(default_factory=dict)
     voice_batch_kept: list = field(default_factory=list)
     export_preset: str = "veryfast"
+    video_effects: dict = field(default_factory=dict)
     max_fit: float = 1.6
     music_clean: dict = field(default_factory=dict)
     music_threads: int = 2
     music_backend: str = "cpu"
+    original_muted: bool = False
     original_volume: float = .12
     voice_volume: float = 1.0
     style: dict = field(default_factory=lambda: dict(font='Arial', size=52, color='#FFFFFF', outline=3, shadow=2, bold=True, x=50., y=88., width=88., box=False))
+    overlays: list = field(default_factory=list)
+    sidebar: dict = field(default_factory=dict)
     screen_regions: list = field(default_factory=list)
     mask: dict = field(default_factory=lambda: dict(enabled=False, mode='blur', x=8., y=80., w=84., h=14., opacity=1.0, color='#171717'))
 
+    @property
+    def original_gain(self): return 0.0 if self.original_muted else self.original_volume
     @property
     def speed(self): return self.work_speed * self.final_speed
     @property
@@ -74,6 +82,9 @@ class Project:
         if not isinstance(p.music_threads,int) or not 1<=p.music_threads<=8:raise ValueError('Số luồng giảm nhạc phải từ 1 đến 8.')
         if not isinstance(p.music_clean,dict):raise ValueError('Cấu hình giảm nhạc không hợp lệ.')
         if p.export_preset not in ('ultrafast','veryfast','medium'):raise ValueError('Chế độ xuất không hợp lệ.')
+        if not isinstance(p.original_muted,bool):raise ValueError('Trạng thái tắt âm gốc không hợp lệ.')
+        effect_settings(p.video_effects)
+        validate_composition(p)
         for region in p.screen_regions:validate_screen_region(region,p.duration)
         if len({r["id"] for r in p.screen_regions})!=len(p.screen_regions):raise ValueError("ID vùng chữ bị trùng.")
         for c in p.cues: validate_cue(c)
@@ -137,13 +148,13 @@ def binary(name):
     if not found: raise RuntimeError(f'Không tìm thấy {name}. Thêm FFmpeg vào PATH hoặc đặt ffmpeg.exe và ffprobe.exe vào thư mục tools.')
     return found
 
-def run(args,cancel=None,cwd=None,progress=None,total=0,capture=False):
+def run(args,cancel=None,cwd=None,progress=None,total=0,capture=False,timeout=None):
     """No shell. Drain output continuously; polling remains cancellable during silence."""
     import queue
     flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
     proc=subprocess.Popen([str(a) for a in args],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
         text=True,encoding='utf-8',errors='replace',cwd=cwd,creationflags=flags)
-    q=queue.Queue(); tail=[]
+    q=queue.Queue(); tail=[];started=time.monotonic()
     def read():
         for line in proc.stdout: q.put(line)
         q.put(None)
@@ -151,6 +162,7 @@ def run(args,cancel=None,cwd=None,progress=None,total=0,capture=False):
     try:
         while True:
             if cancel and cancel.is_set(): raise InterruptedError('Đã hủy. Dữ liệu đã tạo vẫn được giữ để tiếp tục.')
+            if timeout is not None and time.monotonic()-started>timeout:raise TimeoutError('Quá thời gian kiểm tra bộ mã hóa.')
             try: line=q.get(timeout=.1)
             except queue.Empty: continue
             if line is None: break
@@ -194,11 +206,16 @@ def ass_text(text):
     # ASS overrides must never execute supplied SRT text.
     return plain(text).replace('\\','\\\u200b').replace('{','｛').replace('}','｝').replace('\n',r'\N')
 
-def write_ass(path,p):
-    st=p.style; w,h=p.width,p.height
+def write_ass(path,p, *, cues=True, regions=True, canvas=None, mirror_regions=False):
+    st=p.style; w,h=canvas or (p.width,p.height)
     # Font size is specified on a 1080-high canvas, proportional for other resolutions.
     scale=h/1080
-    margin=max(0,round(w*(100-st['width'])/200))
+    content_w=w;origin_x=0
+    if canvas and cues and p.sidebar.get('enabled'):
+        bar=sidebar_settings(p.sidebar);content_w=max(2,int(w*(1-bar['width']/100))//2*2)
+        if bar['side']=='left':origin_x=w-content_w
+    margin=max(0,round(content_w*(100-st['width'])/200))
+    margin_left=origin_x+margin;margin_right=w-origin_x-content_w+margin
     header=f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {w}
@@ -208,38 +225,54 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{st['font'].replace(',', '')},{st['size']*scale:.3f},{ass_color(st['color'])},&H000000FF,&H00000000,&H80000000,{-1 if st['bold'] else 0},0,0,0,100,100,0,0,{3 if st['box'] else 1},{st['outline']*scale:.3f},{st['shadow']*scale:.3f},2,{margin},{margin},10,1
+Style: Default,{st['font'].replace(',', '')},{st['size']*scale:.3f},{ass_color(st['color'])},&H000000FF,{ass_color(st.get('outline_color','#000000'))},&H80000000,{-1 if st['bold'] else 0},{-1 if st.get('italic') else 0},0,0,100,100,{st.get('spacing',0)*scale},0,{3 if st['box'] else 1},{st['outline']*scale:.3f},{st['shadow']*scale:.3f},2,{margin_left},{margin_right},10,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     events=[]
-    for c in p.cues:
+    for c in (p.cues if cues else []):
         if not plain(c.text): continue
         text=ass_text(c.text)
-        events.append(f'Dialogue: 0,{stamp(c.start,True)},{stamp(c.end,True)},Default,,0,0,0,,{{\\pos({w*st["x"]/100:.2f},{h*st["y"]/100:.2f})}}{text}')
-    for r in p.screen_regions:
+        if st.get('fade',0):text=r'{\fad('+str(round(st['fade']))+','+str(round(st['fade']))+')}' + text
+        events.append(f'Dialogue: 0,{stamp(c.start,True)},{stamp(c.end,True)},Default,,0,0,0,,{{\\pos({origin_x+content_w*st["x"]/100:.2f},{h*st["y"]/100:.2f})}}{text}')
+    for r in (p.screen_regions if regions else []):
         if not r.get('enabled',True) or not plain(r['text']):continue
-        x,y,rw,rh=region_pixels(p,r);cx=x+rw/2;cy=y+rh/2
+        x,y,rw,rh=region_pixels(p,r)
+        if mirror_regions:x=w-x-rw
+        cx=x+rw/2;cy=y+rh/2
         tags=(r'\an5\q0'+f'\\pos({cx:.2f},{cy:.2f})'+f'\\fs{r["size"]*scale:.2f}'+f'\\bord{3*scale:.3f}\\shad{scale:.3f}\\b1'+r'\1c'+ass_color(r['color']))
         events.append(f'Dialogue: 1,{stamp(r["start"],True)},{stamp(r["end"],True)},Default,,{x},{max(0,w-x-rw)},0,,{{{tags}}}{ass_text(r["text"])}')
     Path(path).write_text(header+'\n'.join(events)+'\n',encoding='utf-8-sig')
 
-def video_filter(p,ass_name='subtitles.ass'):
+def video_filter(p,ass_name='subtitles.ass',assets=None):
     regions=[]
-    if p.mask['enabled']:regions.append(dict(p.mask,start=0,end=p.duration,strength=20))
+    if p.mask['enabled']:regions.append(dict(p.mask,start=0,end=p.duration,strength=p.mask.get('strength',20)))
     regions.extend(dict(r,fill='#171717') for r in p.screen_regions if r.get('enabled',True) and r['mode']!='none')
     filters=[];source='[0:v]'
     for i,r in enumerate(regions):
         x,y,w,h=region_pixels(p,r);out=f'[mask{i}]'
         enable=f"gte(t,{r['start']:.6f})*lt(t,{r['end']:.6f})"
-        if r['mode']=='blur':
+        if r['mode'] in ('blur','gblur','mosaic'):
             radius=max(1,min(int(r.get('strength',20)),w//4,h//4))
-            filters.append(f"{source}split[base{i}][crop{i}];[crop{i}]crop={w}:{h}:{x}:{y},boxblur={radius}:2[patch{i}];[base{i}][patch{i}]overlay={x}:{y}:enable='{enable}'{out}")
+            patch=f'boxblur={radius}:2'
+            if r['mode']=='gblur':patch=f'gblur=sigma={radius}'
+            elif r['mode']=='mosaic':patch=f'scale={max(1,w//max(2,radius))}:{max(1,h//max(2,radius))}:flags=area,scale={w}:{h}:flags=neighbor'
+            filters.append(f"{source}split[base{i}][crop{i}];[crop{i}]crop={w}:{h}:{x}:{y},{patch}[patch{i}];[base{i}][patch{i}]overlay={x}:{y}:enable='{enable}'{out}")
         else:
             color=r.get('fill',r.get('color','#171717'));ass_color(color)
             filters.append(f"{source}drawbox=x={x}:y={y}:w={w}:h={h}:color={color}@{r.get('opacity',1)}:t=fill:enable='{enable}'{out}")
         source=out
+    effects=effect_settings(p.video_effects)
+    if effects['enabled'] or p.sidebar.get('enabled'):
+        if effects['enabled'] and effects['flip']:
+            filters.append(source+'hflip[flipped]');source='[flipped]'
+        filters.append(source+"subtitles=filename='regions.ass'[annotated]")
+        source='[annotated]'
+    if effects['enabled'] or p.sidebar.get('enabled'):
+        filters.append(picture_filter(p,source));source='[picture]'
+    artwork,source=artwork_filter(source,assets or [])
+    filters.extend(artwork)
     filters.append(source+f"subtitles=filename='{ass_name}',setpts=(PTS-STARTPTS)/{p.speed:.9f},pad=ceil(iw/2)*2:ceil(ih/2)*2[v]")
     return ';'.join(filters)
 
@@ -551,11 +584,35 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
 
 def check_project(p):
     if not p.video or not Path(p.video).is_file(): raise ValueError('Hãy chọn video đang tồn tại.')
-    if not p.cues and not p.screen_regions and not p.music_clean.get('enabled'): raise ValueError('Hãy nhập SRT hoặc thêm vùng chữ / làm mờ trước.')
+    effect_settings(p.video_effects)
+    validate_composition(p,files=True)
     for r in p.screen_regions:validate_screen_region(r,p.duration)
     for c in p.cues:
         validate_cue(c)
         if c.end>p.duration+.1: raise ValueError(f'Phụ đề {stamp(c.end)} vượt thời lượng video. Kiểm tra đúng video và SRT.')
+
+def export_encoder(p, preset, cancel, report):
+    """Exercise hardware at the requested size; an encoder listing alone is insufficient."""
+    cpu=['-c:v','libx264','-preset',preset,'-crf','20']
+    if preset!='ultrafast':return 'CPU · libx264',cpu
+    w,h=output_size(p)
+    candidates=[
+        ('NVIDIA NVENC',['-c:v','h264_nvenc','-preset','p1','-rc','vbr','-cq','20','-b:v','0']),
+        ('Intel Quick Sync',['-c:v','h264_qsv','-preset','veryfast','-global_quality','20']),
+        ('AMD AMF',['-c:v','h264_amf','-quality','speed','-rc','cqp','-qp_i','20','-qp_p','20']),
+    ]
+    for name,options in candidates:
+        report(0,'Kiểm tra mã hóa GPU · '+name)
+        try:
+            run([binary('ffmpeg'),'-v','error','-nostdin','-f','lavfi','-i',
+                 f'color=black:size={w}x{h}:rate=30','-frames:v','3','-an']+
+                options+['-pix_fmt','yuv420p','-f','null','-'],cancel,timeout=12)
+            return name,options
+        except (RuntimeError,TimeoutError) as e:
+            report(0,name+' chưa dùng được: '+str(e)[-350:])
+    report(0,'Không có GPU mã hóa khả dụng · dùng CPU ultrafast')
+    return 'CPU · libx264',cpu
+
 
 def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_partial=False,segment=None,review_voice=None):
     check_project(p)
@@ -567,9 +624,17 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
     if out.exists(): raise ValueError('Tên tệp đã tồn tại. Hãy chọn tên mới để giữ bản cũ.')
     cache=Path(cache);cache.mkdir(parents=True,exist_ok=True)
     job=cache/('render-'+uuid.uuid4().hex[:10]);job.mkdir()
-    write_ass(job/'subtitles.ass',p)
+    effects=effect_settings(p.video_effects)
+    if effects['enabled'] or p.sidebar.get('enabled'):
+        write_ass(job/'subtitles.ass',p,regions=False,canvas=output_size(p))
+        write_ass(job/'regions.ass',p,cues=False,mirror_regions=bool(effects['enabled'] and effects['flip']))
+    else:
+        write_ass(job/'subtitles.ass',p)
     partial=out.with_name(out.stem+'.partial'+out.suffix)
-    graph=video_filter(p)
+    try:assets=prepare_layers(job,p) if p.overlays else []
+    except Exception:
+        shutil.rmtree(job,ignore_errors=True);raise
+    graph=video_filter(p,assets=assets)
     args=[binary('ffmpeg'),'-y','-nostdin']
     duration=p.output_duration
     if segment is not None:
@@ -586,12 +651,12 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
         if preview is not None: args+=['-ss',f'{max(0,source_start-(segment[0] if local_voice else 0))/p.work_speed:.6f}']
         args+=['-i',str(local_voice['track'] if local_voice else voice_track_path(cache))]
     audios=[];source_audio='0:a'
-    clean=clean_audio_path(p)
+    clean=clean_audio_path(p) if p.has_audio and p.original_gain>0 else None
     if clean:
         if preview is not None:args+=['-ss',f'{source_start:.6f}']
         source_audio=f'{2 if with_voice else 1}:a';args+=['-i',str(clean)]
-    if p.has_audio and p.original_volume>0:
-        graph+=f';[{source_audio}]asetpts=PTS-STARTPTS,{atempo(p.speed)},volume={p.original_volume},apad,atrim=duration={duration:.6f}[original]';audios.append('[original]')
+    if p.has_audio and p.original_gain>0:
+        graph+=f';[{source_audio}]asetpts=PTS-STARTPTS,{atempo(p.speed)},volume={p.original_gain},apad,atrim=duration={duration:.6f}[original]';audios.append('[original]')
     if with_voice:
         graph+=f';[1:a]asetpts=PTS-STARTPTS,{atempo(p.final_speed)},volume={p.voice_volume},apad,atrim=duration={duration:.6f}[voice]';audios.append('[voice]')
     if audios: graph+=';'+''.join(audios)+f'amix=inputs={len(audios)}:duration=longest:normalize=0,alimiter=limit=0.97:level=false:latency=true[a]'
@@ -599,16 +664,31 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
     args+=['-filter_complex_script','filters.txt','-map','[v]']
     if audios: args+=['-map','[a]','-c:a','aac','-b:a','192k']
     else: args+=['-an']
-    args+=['-t',f'{duration:.6f}','-c:v','libx264','-preset','ultrafast' if preview is not None else p.export_preset,
-        '-crf','20','-pix_fmt','yuv420p','-movflags','+faststart','-progress','pipe:1','-nostats',str(partial)]
+    preset='ultrafast' if preview is not None else p.export_preset
+    tail=['-pix_fmt','yuv420p','-movflags','+faststart','-progress','pipe:1','-nostats',str(partial)]
+    args+=['-t',f'{duration:.6f}']
     try:
-        began=time.monotonic()
+        encoder,options=export_encoder(p,preset,cancel,report)
+        began=time.monotonic();last_percent=0
         def export_progress(percent):
+            nonlocal last_percent
+            last_percent=percent
             elapsed=time.monotonic()-began
+            speed=duration*percent/100/max(elapsed,.001)
             eta=elapsed*(100-percent)/percent if percent>0 else 0
-            report(percent,f'Xuất {percent:.1f}% · Đã chạy {stamp(elapsed)} · Còn khoảng {stamp(eta)}')
-        report(0,'Đang xuất video · '+p.export_preset)
-        run(args,cancel,cwd=job,progress=export_progress,total=duration)
+            remaining='Đang ước tính' if elapsed<15 or percent<=0 else 'Còn khoảng '+stamp(eta)
+            report(percent,f'{encoder} · Xuất {percent:.1f}% · {speed:.2f}× · Đã chạy {stamp(elapsed)} · {remaining}')
+        report(0,'Đang xuất video · '+encoder+' · '+preset)
+        try:
+            run(args+options+tail,cancel,cwd=job,progress=export_progress,total=duration)
+        except RuntimeError:
+            # Only retry startup failures, never silently restart a long completed portion.
+            if options[1]=='libx264' or last_percent>0 or time.monotonic()-began>30:raise
+            if cancel.is_set():raise InterruptedError('Đã hủy xuất video.')
+            encoder='CPU · libx264';began=time.monotonic()
+            report(0,'GPU không khởi động được với video này · chuyển sang CPU ultrafast')
+            run(args+['-c:v','libx264','-preset',preset,'-crf','20']+tail,
+                cancel,cwd=job,progress=export_progress,total=duration)
         if out.exists(): raise ValueError('Tệp đích vừa được tạo bởi tiến trình khác; không ghi đè.')
         partial.replace(out);report(100,'Đã xuất video.');return str(out)
     finally:
@@ -897,7 +977,7 @@ def validate_screen_region(r,duration):
     if not 0<=r['start']<r['end'] or (duration and r['end']>duration+.001):raise ValueError('Thời gian vùng chữ vượt video hoặc không hợp lệ.')
     if not (0<=r['x']<100 and 0<=r['y']<100 and 0<r['w']<=100-r['x']+.001 and 0<r['h']<=100-r['y']+.001):raise ValueError('Vùng chọn nằm ngoài video.')
     if not 8<=r['size']<=200 or not 1<=r['strength']<=40:raise ValueError('Cỡ chữ / độ mờ không hợp lệ.')
-    if r.get('mode') not in ('blur','solid','none'):raise ValueError('Kiểu che không hợp lệ.')
+    if r.get('mode') not in ('blur','gblur','mosaic','solid','none'):raise ValueError('Kiểu che không hợp lệ.')
     if not isinstance(r.get('text'),str) or not isinstance(r.get('id'),str):raise ValueError('Vùng chữ không hợp lệ.')
     ass_color(r['color'])
 
@@ -1100,7 +1180,7 @@ def separate_music_chunk(source,target,models,cancel,python=None):
     finally:session.close()
 
 
-def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separator=None,fresh=False):
+def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separator=None,fresh=False,polish=False):
     """30s resumable blocks with 1s context; source/video/TTS files are never rewritten."""
     if not 0<=retain<=.5:raise ValueError('Mức giữ nền phải từ 0 đến 50%.')
     if not p.has_audio:raise ValueError('Video không có âm thanh gốc.')
@@ -1162,16 +1242,27 @@ def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separato
         temp=original.with_suffix('.partial.flac')
         try:run([binary('ffmpeg'),'-v','error','-y','-nostdin','-ss',str(start),'-i',p.video,'-t',str(end-start),'-vn','-ac',2,'-ar',44100,'-c:a','flac',temp],cancel);temp.replace(original)
         finally:temp.unlink(missing_ok=True)
+    if retain==0:track=dry
     if not track.is_file():
         tmp=track.with_suffix('.partial.flac')
         graph=f'[0:a]volume={1-retain:.6f}[speech];[1:a]volume={retain:.6f}[original];[speech][original]amix=inputs=2:duration=longest:normalize=0,apad,atrim=duration={end-start:.6f},alimiter=limit=0.97:level=false:latency=true[out]'
         try:run([binary('ffmpeg'),'-v','error','-y','-nostdin','-i',dry,'-ss',str(start),'-i',p.video,'-filter_complex',graph,'-map','[out]','-t',str(end-start),'-ac',2,'-ar',44100,'-c:a','flac',tmp],cancel);tmp.replace(track)
         finally:tmp.unlink(missing_ok=True)
+    if polish:
+        polished=track.with_name(track.stem+'-speech-filter-v1.flac')
+        if not polished.is_file():
+            tmp=polished.with_suffix('.partial.flac')
+            try:
+                report(92,'Lọc nhẹ tiếng ù và nhiễu còn lại sau tách…')
+                run([binary('ffmpeg'),'-v','error','-y','-nostdin','-i',track,'-af','highpass=f=70,lowpass=f=12000,afftdn=nr=8:nf=-35','-c:a','flac',tmp],cancel)
+                tmp.replace(polished)
+            finally:tmp.unlink(missing_ok=True)
+        track=polished
     if abs(probe(track)['duration']-(end-start))>.05:
         track.unlink(missing_ok=True);dry.unlink(missing_ok=True)
         raise RuntimeError('Âm đã xử lý lệch thời lượng; chưa áp dụng vào dự án. Bấm xử lý tiếp để ghép lại các đoạn đã xong.')
     report(100,'Đã xử lý xong khoảng âm thanh.')
-    return dict(source_key=key,track=str(track),original=str(original) if segment is not None else '',retain=retain,start=start,end=end,backend=p.music_backend,processing_seconds=processing_time,processed_audio_seconds=processed_seconds)
+    return dict(source_key=key,track=str(track),original=str(original) if segment is not None else '',retain=retain,polish=polish,start=start,end=end,backend=p.music_backend,processing_seconds=processing_time,processed_audio_seconds=processed_seconds)
 
 
 def make_music_preview(p,result,base,cancel,report):
