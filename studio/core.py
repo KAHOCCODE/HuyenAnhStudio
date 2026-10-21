@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 from .video_effects import settings as effect_settings, output_size, picture_filter
 from .composition import validate_composition, prepare_layers, artwork_filter, sidebar_settings, subtitle_area
+from .tts import TTSCooldown, TTSServiceError, fetch_voice, context as _tts_context, edge_client
 
 RATE = 24000
 ROOT = Path(__file__).resolve().parent.parent
@@ -296,50 +297,6 @@ def voice_ready(p,cache):
     # A single-cue preview or a cancelled batch may have filled a formerly missing cue.
     return not any(c.id in missing and (Path(cache)/(raw_key(c,p)+'.mp3')).is_file() for c in p.cues)
 
-class TTSCooldown:
-    def __init__(self):self.lock=threading.Lock();self.until=0.;self.failures=0
-    def fail(self):
-        with self.lock:
-            self.failures+=1;delay=min(60,5*2**min(4,self.failures-1))
-            self.until=max(self.until,time.monotonic()+delay)
-        return delay
-    def success(self):
-        with self.lock:self.failures=0
-    def wait(self,cancel):
-        while True:
-            if cancel.is_set():raise InterruptedError('Đã hủy trong lúc chờ dịch vụ voice.')
-            with self.lock:remaining=self.until-time.monotonic()
-            if remaining<=0:return
-            cancel.wait(min(.2,remaining))
-
-_tts_context=threading.local()
-
-async def fetch_voice(text,voice,rate,path,cancel):
-    import edge_tts
-    last=None;gate=getattr(_tts_context,"gate",None) or TTSCooldown()
-    for attempt in range(3):
-        gate.wait(cancel)
-        if cancel.is_set(): raise InterruptedError('Đã hủy tạo giọng.')
-        task=asyncio.create_task(edge_tts.Communicate(text,voice,rate=f'{rate:+d}%').save(str(path)))
-        try:
-            began=time.monotonic()
-            while not task.done():
-                if cancel.is_set(): raise InterruptedError('Đã hủy tạo giọng.')
-                if time.monotonic()-began>90: raise TimeoutError('Edge TTS phản hồi quá lâu.')
-                await asyncio.sleep(.15)
-            await task
-            gate.success();return
-        except (Exception,asyncio.CancelledError) as e:
-            task.cancel()
-            try: await task
-            except (Exception,asyncio.CancelledError): pass
-            if isinstance(e,InterruptedError): raise
-            last=e
-            delay=gate.fail()
-            report=getattr(_tts_context,'report',None)
-            if report:report(f'Voice lỗi; nghỉ ít nhất {delay}s trước khi thử lại ({attempt+1}/3).')
-    raise RuntimeError(f'Edge TTS không tạo được giọng sau 3 lần thử: {last}')
-
 def fit_voice(raw,out,slot,cancel):
     duration=probe(raw)['duration'];factor=max(1,duration/slot)
     run([binary('ffmpeg'),'-y','-v','error','-i',raw,'-af',atempo(factor)+f',apad,atrim=duration={slot:.6f}',
@@ -491,24 +448,26 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
         order={id:i for i,id in enumerate(only_ids)};spoken.sort(key=lambda c:order[c.id])
     if not spoken:raise ValueError('Vùng chọn không có câu cần đọc.')
     from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
-    gate=TTSCooldown()
+    capacity=max(1,min(6,p.tts_workers));gate=TTSCooldown(capacity)
     errors=[];unique={raw_key(c,p):c for c in spoken};pending=[];done=0;total=len(unique);began=time.monotonic()
     for key,c in unique.items():
         if (cache/(key+'.mp3')).is_file() and (cache/(key+'.mp3')).stat().st_size>0:done+=1
         else:pending.append((key,c))
-    report(65*done/max(1,total),f'Dùng lại {done}/{total} MP3 · Tạo tối đa {min(24,p.tts_workers*len(parallel_segments)) if parallel_segments else p.tts_workers} câu cùng lúc')
+    version=edge_client().__version__ if pending else 'không cần kết nối'
+    report(65*done/max(1,total),f'Edge TTS {version} · Dùng lại {done}/{total} MP3 · Thử 1 câu trước, tối đa {capacity} câu cho toàn bộ lượt')
     def fetch_one(pair):
         key,c=pair;raw=cache/(key+'.mp3');temp=raw.with_suffix('.partial.mp3')
         try:
             if cancel.is_set():raise InterruptedError('Đã hủy tạo giọng.')
             _tts_context.gate=gate;_tts_context.report=lambda msg:report(65*done/max(1,total),msg)
-            gate.wait(cancel)
             asyncio.run(fetch_voice(plain(c.text),c.voice or p.voice,p.tts_rate+c.tts_rate,temp,cancel))
             probe(temp);temp.replace(raw)
             return c.id,None
-        except InterruptedError:raise
+        except (InterruptedError,TTSServiceError):raise
         except Exception as e:return c.id,str(e)
-        finally:temp.unlink(missing_ok=True)
+        finally:
+            temp.unlink(missing_ok=True)
+            _tts_context.__dict__.clear()
     # Shared collector: workers never mutate manifests. Refill each freed slot immediately.
     from collections import deque
     segments=parallel_segments or [(float('-inf'),float('inf'))]
@@ -516,7 +475,7 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
     for pair in pending:
         group=next((i for i,(a,b) in enumerate(segments) if a<=pair[1].start<b),0)
         queues[group].append(pair)
-    limit=max(1,min(6,p.tts_workers));capacity=min(24,limit*len(segments));cursor=0
+    limit=capacity;cursor=0
     with ThreadPoolExecutor(max_workers=capacity) as pool:
         futures={}
         while any(queues) or futures:
@@ -527,7 +486,7 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
                 group=next(((cursor+j)%len(queues) for j in range(len(queues)) if queues[(cursor+j)%len(queues)] and active[(cursor+j)%len(queues)]<limit),None)
                 if group is None:break
                 futures[pool.submit(fetch_one,queues[group].popleft())]=group;active[group]+=1;cursor=(group+1)%len(queues)
-            finished,_=wait(futures,return_when=FIRST_COMPLETED)
+            finished,_=wait(futures,timeout=.2,return_when=FIRST_COMPLETED)
             for future in finished:
                 active[futures.pop(future)]-=1
                 id,error=future.result();done+=1

@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3.1 — quy trình thống nhất
+# HUYỄN ẢNH Studio 0.3.2 — quy trình thống nhất
 
 Ứng dụng desktop dành cho Windows để chỉnh hình, che phụ đề gốc, thêm chữ/logo, phụ đề Việt và giọng đọc. Giao diện làm việc theo năm bước với một bảng chỉnh cố định bên phải.
 
@@ -50,9 +50,12 @@ Trong **Âm thanh / giọng đọc**, mục **Tốc độ video dựng ×** nằ
 
 - Giọng ngắn hơn khoảng câu được thêm im lặng; giọng dài hơn được tăng tốc trong giới hạn. Nếu vẫn quá dài, sửa câu, tăng khoảng câu hoặc đổi thiết lập rồi tạo/ghép lại.
 - MP3 có cùng văn bản, giọng và tốc độ được dùng lại khi chạy tiếp. Có tiến độ, thử lại khi lỗi và hủy tác vụ; không tự rút gọn văn bản.
+- Các lượt dùng chung giới hạn 1–6 câu đồng thời, không nhân theo số lượt. App bắt đầu bằng 1 câu thật rồi tăng dần đến mức đã chọn. Khi lỗi tạm thời, các câu cùng chờ 5 rồi 10 giây (hoặc thời gian dịch vụ yêu cầu), chỉ 1 câu thử phục hồi; lỗi cùng thời điểm không cộng dồn thời gian chờ. Sau 3 lần dịch vụ không phục hồi, app dừng cả hàng đợi và giữ MP3 để chạy tiếp.
 - Âm video gốc giảm cả tiếng nói, nhạc và hiệu ứng. **Tắt âm thanh gốc** bỏ toàn bộ tiếng này khi xem/xuất và giữ mức âm lượng cũ để khôi phục khi bỏ chọn. Giọng Việt có âm lượng riêng.
 - **Giảm nền / chỉ giữ lời nói…** mở bộ tách AI: nền 0% dùng trực tiếp phần giọng đã tách; mức cao hơn trộn lại một phần nền. Có lọc nhẹ tiếng ù/nhiễu, có thể làm giọng mỏng đi. Hãy nghe lượt thử 30 giây trước khi áp dụng toàn video. Đổi mức nền hoặc lọc dùng lại các đoạn AI đã hoàn tất. Cần cài riêng bằng CAI-GIAM-NHAC.cmd, hoặc CAI-GPU-GTX.cmd cho DirectML. Không có cam kết tách sạch mọi tiếng động.
 - Edge TTS cần mạng, văn bản được gửi tới dịch vụ ngoài và có thể gặp lỗi/giới hạn. Voice dài nhiều giờ cần thời gian và dung lượng; WAV mono 24 kHz dùng khoảng 173 MB/giờ, chưa tính tệp từng câu.
+
+Nếu nhật ký báo **HTTP 403**, dịch vụ đang từ chối kết nối. Bản 0.3.2 dùng **edge-tts 7.3.1** thay cho 7.2.8 và dừng hàng đợi ngay khi gặp lỗi này. Đóng app, cập nhật mã rồi chạy **install.cmd** để cập nhật thư viện; chỉ git pull và mở lại chưa đủ. Giữ nguyên dự án và thư mục voice, sau đó chạy tiếp các lượt đang thiếu. Nhật ký ghi phiên bản Edge TTS khi tạo giọng. Nếu đã dùng 7.3.1 mà vẫn 403, kiểm tra ngày giờ Windows và mạng/dịch vụ, tránh chạy lại hàng nghìn câu liên tiếp. Nguồn sửa lỗi: [Edge TTS #490](https://github.com/rany2/edge-tts/issues/490), [bản 7.3.1](https://github.com/rany2/edge-tts/releases/tag/7.3.1).
 
 ### 5 · Xuất video
 

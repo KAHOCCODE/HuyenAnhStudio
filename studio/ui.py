@@ -749,7 +749,7 @@ class Window(QMainWindow):
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
         self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.1'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.2'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -1665,7 +1665,7 @@ class Window(QMainWindow):
         if not self.p.video or not self.p.cues:self.error('Mở video và SRT trước.');return
         dialog=QDialog(self);dialog.setWindowTitle('Voice · Chọn lượt cần chạy');dialog.resize(820,620)
         layout=QVBoxLayout(dialog)
-        note=QLabel('Chia lượt chỉ để tạo voice, không đổi vị trí phát video.\nChọn 1, vài hoặc tất cả lượt. Câu đã có được dùng lại; lỗi sẽ nghỉ rồi thử lại tối đa 3 lần.');note.setWordWrap(True);layout.addWidget(note)
+        note=QLabel('Chia lượt chỉ để tạo voice, không đổi vị trí phát video.\nCâu đã có được dùng lại. App thử 1 câu trước khi chạy nhiều câu; dừng hàng đợi nếu dịch vụ từ chối kết nối.');note.setWordWrap(True);layout.addWidget(note)
         row=QHBoxLayout();row.addWidget(QLabel('Mỗi lượt'));minutes=QSpinBox();minutes.setRange(1,120);minutes.setSuffix(' phút');minutes.setValue(self.p.voice_batch_minutes);row.addWidget(minutes)
         for n in (10,20,30):row.addWidget(self.button(f'{n} phút',lambda checked=False,n=n:minutes.setValue(n)))
         layout.addLayout(row);table=QTableWidget(0,4);table.setHorizontalHeaderLabels(['Chạy','Từ','Đến','Voice đã có']);table.horizontalHeader().setSectionResizeMode(3,QHeaderView.Stretch);table.setEditTriggers(QAbstractItemView.NoEditTriggers);layout.addWidget(table,1)
@@ -1689,28 +1689,26 @@ class Window(QMainWindow):
             for i in range(table.rowCount()):table.item(i,0).setCheckState(Qt.Checked if i<first.value() else Qt.Unchecked)
         pick.addWidget(self.button('Chọn N lượt đầu',first_rows));layout.addLayout(pick)
         parallel=QCheckBox('Chạy song song các lượt đã chọn');parallel.setChecked(True);layout.addWidget(parallel)
-        pool=QHBoxLayout();pool.addWidget(QLabel('Giới hạn câu đồng thời (theo chế độ bên dưới)'));workers=QSpinBox();workers.setRange(1,6);workers.setValue(self.p.tts_workers);pool.addWidget(workers);layout.addLayout(pool)
-        allocation=QComboBox();allocation.addItems(['Dùng chung giới hạn cho tất cả lô','Giới hạn riêng cho mỗi lô']);layout.addWidget(allocation)
+        pool=QHBoxLayout();pool.addWidget(QLabel('Tổng số câu đồng thời (mọi lượt)'));workers=QSpinBox();workers.setRange(1,6);workers.setValue(self.p.tts_workers);pool.addWidget(workers);layout.addLayout(pool)
         hint=QLabel();hint.setWordWrap(True);layout.addWidget(hint)
         def explain():
-            n=sum(table.item(i,0) is not None and table.item(i,0).checkState()==Qt.Checked for i in range(table.rowCount()));k=workers.value();allocation.setEnabled(parallel.isChecked())
+            n=sum(table.item(i,0) is not None and table.item(i,0).checkState()==Qt.Checked for i in range(table.rowCount()));k=workers.value()
             if not parallel.isChecked():text=f'Tuần tự: tối đa {k} câu của lô 1, xong mới tới lô 2. Không có hai lô chạy cùng lúc.'
-            elif allocation.currentIndex()==0:text=f'Dùng chung: tối đa {k} câu cho tổng {n} lô. Xếp xen kẽ các lô; không nhân thành {n*k} câu.'
-            else:text=f'Riêng từng lô: tối đa {k} câu/lô × {n} lô = {n*k} câu; giới hạn tổng thực tế {min(24,n*k)} câu (trần 24).'
-            hint.setText(text+'\nMột câu xong → nhận câu tiếp theo ngay, không đợi hết nhóm. Khi lỗi mạng, các yêu cầu mới cùng chờ rồi thử lại.')
-        parallel.toggled.connect(explain);allocation.currentIndexChanged.connect(explain);workers.valueChanged.connect(explain);table.itemChanged.connect(explain);explain()
+            else:text=f'Dùng chung: tối đa {k} câu cho tổng {n} lô. Xếp xen kẽ các lô, không nhân số kết nối theo số lượt.'
+            hint.setText(text+'\nKhởi đầu 1 câu rồi tăng dần. Khi lỗi tạm thời, tất cả cùng chờ và chỉ 1 câu thử lại; lỗi 403 dừng ngay. MP3 đã có luôn được giữ.')
+        parallel.toggled.connect(explain);workers.valueChanged.connect(explain);table.itemChanged.connect(explain);explain()
         stop=QCheckBox('Chế độ tuần tự: dừng sau lượt còn lỗi');stop.setChecked(True);stop.setEnabled(False);parallel.toggled.connect(lambda on:stop.setEnabled(not on));layout.addWidget(stop)
         def start():
             selected=[b for i,b in enumerate(batches) if table.item(i,0).checkState()==Qt.Checked]
             if not selected:note.setText('Hãy tích ít nhất một lượt cần chạy.');return
             self.p.voice_batch_minutes=minutes.value();self.dirty=True
             self.p.tts_workers=workers.value();self.syncing=True;self.workers.setValue(workers.value());self.syncing=False
-            stop_on_error=stop.isChecked();parallel_run=parallel.isChecked();per_batch=parallel_run and allocation.currentIndex()==1;dialog.accept()
-            self.run_voice_queue(selected,stop_on_error,parallel=parallel_run,per_batch=per_batch)
+            stop_on_error=stop.isChecked();parallel_run=parallel.isChecked();dialog.accept()
+            self.run_voice_queue(selected,stop_on_error,parallel=parallel_run)
         actions=QHBoxLayout();actions.addWidget(self.button('Chạy các lượt đã chọn',start,True));actions.addWidget(self.button('Đóng',dialog.reject));layout.addLayout(actions)
         dialog.exec();dialog.deleteLater()
 
-    def run_voice_queue(self,segments,stop_on_error=True,parallel=False,per_batch=False):
+    def run_voice_queue(self,segments,stop_on_error=True,parallel=False):
         if not self.guard() or not self.save():return
         try:check_project(self.p)
         except Exception as e:self.error(str(e));return
@@ -1719,7 +1717,7 @@ class Window(QMainWindow):
             if parallel:
                 ids=interleaved_voice_ids(p,segments)
                 if not ids:return dict(rows=[],tts_errors=[],generated_only=True,missing_count=0,queue_completed=len(segments),queue_total=len(segments))
-                result=generate_voices(p,cache,cancel,lambda n,msg:report(n,f'Song song {len(segments)} lượt · '+msg),only_ids=ids,mix=False,parallel_segments=segments if per_batch else None)
+                result=generate_voices(p,cache,cancel,lambda n,msg:report(n,f'Song song {len(segments)} lượt · '+msg),only_ids=ids,mix=False,parallel_segments=segments)
                 result.update(queue_completed=len(segments),queue_total=len(segments));return result
             rows={};errors=[];completed=0;attempted=[]
             for i,(a,b) in enumerate(segments):

@@ -1,9 +1,10 @@
 import sys
 from studio.core import binary,run
+from studio.tts import edge_client
 try:
     from PySide6 import __version__ as qt_version
     import edge_tts,numpy
-    print('Python:',sys.version.split()[0],'| PySide6:',qt_version)
+    print('Python:',sys.version.split()[0],'| PySide6:',qt_version,'| Edge TTS:',edge_client().__version__)
     filters=run([binary('ffmpeg'),'-hide_banner','-filters'],capture=True)
     for name in ['subtitles','atempo','boxblur','overlay','amix','alimiter']:
         if name not in filters: raise RuntimeError('FFmpeg thieu bo loc '+name)
