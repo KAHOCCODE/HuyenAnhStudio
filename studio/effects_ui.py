@@ -13,9 +13,10 @@ class EffectsDialog(QDialog):
     exportRequested = Signal()
     sampleRequested = Signal()
 
-    def __init__(self, parent, value, embedded=False):
+    def __init__(self, parent, value, embedded=False, controls_only=False):
         super().__init__(parent)
         self.embedded = embedded
+        self.controls_only=controls_only
         if embedded:self.setWindowFlags(Qt.Widget)
         self.setWindowTitle('Khung hình & màu sắc')
         screen = self.screen().availableGeometry()
@@ -27,6 +28,7 @@ class EffectsDialog(QDialog):
         self.full_export_requested = False
         root = QVBoxLayout(self)
         self.enabled = QCheckBox('Bật tùy chỉnh khung hình và hiệu ứng khi xuất')
+        if controls_only:self.enabled.setText('Bật chỉnh khung và màu')
         self.enabled.setChecked(self.values['enabled'])
         root.addWidget(self.enabled)
         split = QSplitter(Qt.Horizontal)
@@ -123,17 +125,6 @@ class EffectsDialog(QDialog):
             if isinstance(widget, QComboBox): widget.currentIndexChanged.connect(self.control_changed)
             elif isinstance(widget, QCheckBox): widget.toggled.connect(self.control_changed)
             elif isinstance(widget, (QSpinBox, QDoubleSpinBox)): widget.valueChanged.connect(self.control_changed)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Save).setText('Lưu thiết lập')
-        buttons.button(QDialogButtonBox.Cancel).setText('Đóng' if embedded else 'Hủy')
-        full = QPushButton('Áp dụng và xuất toàn bộ video')
-        full.setMinimumHeight(36)
-        full.clicked.connect(self.export_full)
-        root.addWidget(full)
-        preview = buttons.addButton('Xem thử 10 giây', QDialogButtonBox.ActionRole)
-        preview.clicked.connect(lambda: self.apply(True))
-        buttons.accepted.connect(lambda: self.apply(False)); buttons.rejected.connect(self.reject)
-        reset = buttons.addButton('Đặt lại', QDialogButtonBox.ResetRole)
         def reset_values():
             self._loading = True
             defaults = settings({})
@@ -146,8 +137,21 @@ class EffectsDialog(QDialog):
                 else: widget.setValue(value)
             self._loading = False
             self.refresh_canvas()
-        reset.clicked.connect(reset_values)
-        root.addWidget(buttons)
+        if controls_only:
+            from .workflow_ui import Foldout,fold_rows
+            self.geometry_fold=fold_rows(left,{self.controls[k] for k in ('size','layout','zoom','flip')},'Vị trí, kích thước và nền')
+            color_fold=Foldout('Màu sắc và lớp phủ');columns.removeWidget(right);color_fold.body_layout.addWidget(right);columns.addWidget(color_fold);columns.addStretch()
+            size.currentIndexChanged.connect(lambda:self.geometry_fold.toggle.setChecked(size.currentData()=='custom'))
+            self.geometry_fold.toggle.setChecked(size.currentData()=='custom')
+            reset_button=QPushButton('Đặt lại khung và màu');reset_button.clicked.connect(reset_values);root.addWidget(reset_button)
+        else:
+            buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+            buttons.button(QDialogButtonBox.Save).setText('Lưu thiết lập')
+            buttons.button(QDialogButtonBox.Cancel).setText('Đóng' if embedded else 'Hủy')
+            full = QPushButton('Áp dụng và xuất toàn bộ video');full.setMinimumHeight(36);full.clicked.connect(self.export_full);root.addWidget(full)
+            preview = buttons.addButton('Xem thử 10 giây', QDialogButtonBox.ActionRole);preview.clicked.connect(lambda: self.apply(True))
+            buttons.accepted.connect(lambda: self.apply(False)); buttons.rejected.connect(self.reject)
+            reset = buttons.addButton('Đặt lại', QDialogButtonBox.ResetRole);reset.clicked.connect(reset_values);root.addWidget(buttons)
         self._loading = False
         self.refresh_canvas()
 

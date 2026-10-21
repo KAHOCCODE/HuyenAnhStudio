@@ -87,7 +87,8 @@ class CompositionTests(unittest.TestCase):
         finally:decoder.close();decoder.thread.join(3)
         w=Window();w.p=p;w.load_controls();w.show();w.open_layers()
         try:
-            panel=w.layers_panel;self.assertFalse(w.layers_dock.isFloating())
+            panel=w.layers_panel;self.assertEqual(w.stage_index,2)
+            self.assertFalse(panel.isWindow())
             panel.add('icon');self.assertEqual(len(w.p.overlays),2)
             panel.controls['text'].setPlainText('Tên kênh');panel.controls['x'].setValue(20)
             self.assertEqual(w.p.overlays[1]['x'],20)

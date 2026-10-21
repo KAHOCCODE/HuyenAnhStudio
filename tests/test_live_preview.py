@@ -56,7 +56,8 @@ class LivePreviewTests(unittest.TestCase):
     def test_docked_controls_change_main_preview_while_paused(self):
         w=Window();w.p=self.project();w.show();w.video_effects_dialog()
         try:
-            self.assertFalse(w.effects_dock.isFloating())
+            self.assertEqual(w.stage_index,1)
+            self.assertEqual(w.picture_tabs.currentIndex(),1)
             self.assertFalse(w.effects_panel.isWindow())
             w.effects_panel.controls['zoom'].setValue(1.5)
             for _ in range(60):
@@ -66,7 +67,7 @@ class LivePreviewTests(unittest.TestCase):
             self.assertFalse(w.preview.overlay.isVisible())
             self.assertFalse(w.preview.video.pixmap().isNull())
             for preset in ('ultrafast','veryfast','medium'):
-                w.effects_speed.setCurrentIndex(w.effects_speed.findData(preset))
+                w.export_mode.setCurrentIndex(w.export_mode.findData(preset))
                 self.assertEqual(w.p.export_preset,preset)
             w.mask_edit.setChecked(True)
             QTest.qWait(500)

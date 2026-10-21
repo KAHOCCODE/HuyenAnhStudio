@@ -14,7 +14,7 @@ class LayersPanel(QWidget):
     def __init__(self,project,parent=None):
         super().__init__(parent);self.duration=project.duration;self.layers=copy.deepcopy(project.overlays);self.sidebar=sidebar_settings(project.sidebar);self.loading=True
         self.setMinimumWidth(315);root=QVBoxLayout(self)
-        note=QLabel('Che sub gốc → lật hình → thêm chữ / logo → phụ đề Việt.\nCác lớp ở đây luôn đúng chiều. Kéo lớp trên preview để di chuyển; kéo góc để đổi kích thước.');note.setWordWrap(True);root.addWidget(note)
+        note=QLabel('Chọn lớp để chỉnh. Kéo trên preview để di chuyển; kéo góc dưới phải để đổi kích thước.');note.setWordWrap(True);root.addWidget(note)
         row=QHBoxLayout()
         for text,kind in [('＋ Chữ','text'),('＋ Logo','image'),('＋ Biểu tượng','icon')]:
             b=QPushButton(text);b.clicked.connect(lambda checked=False,k=kind:self.add(k));row.addWidget(b)
@@ -31,12 +31,12 @@ class LayersPanel(QWidget):
         self.bar_side=QComboBox();self.bar_side.addItem('Bên phải','right');self.bar_side.addItem('Bên trái','left');self.bar_side.setCurrentIndex(self.bar_side.findData(self.sidebar['side']));form.addRow('Vị trí',self.bar_side)
         self.bar_width=QDoubleSpinBox();self.bar_width.setRange(10,40);self.bar_width.setSuffix(' %');self.bar_width.setValue(self.sidebar['width']);form.addRow('Độ rộng',self.bar_width)
         self.bar_color=QPushButton(self.sidebar['color']);self.bar_color.clicked.connect(lambda:self.pick(self.bar_color,self.update_sidebar));form.addRow('Màu nền',self.bar_color)
-        b=QPushButton('Đặt lớp đang chọn vào dải bên');b.clicked.connect(self.place_in_sidebar);form.addRow(b)
+        b=QPushButton('Đặt lớp đang chọn vào dải bên');self.place_button=b;b.clicked.connect(self.place_in_sidebar);form.addRow(b)
         for widget,signal in [(self.bar_on,'toggled'),(self.bar_side,'currentIndexChanged'),(self.bar_width,'valueChanged')]:getattr(widget,signal).connect(self.update_sidebar)
         self.editor=QGroupBox('Lớp đang chọn · lớp dưới cùng nằm trên hình');form=QFormLayout(self.editor);vertical.addWidget(self.editor);vertical.addStretch();self.controls={}
         def add(key,label,widget):self.controls[key]=widget;form.addRow(label,widget);return widget
         add('name','Tên lớp',QLineEdit());add('enabled','',QCheckBox('Hiện lớp này'))
-        preset=QComboBox()
+        preset=QComboBox();self.text_preset=preset
         for label,key in [('Chọn mẫu chữ…',''),('Trắng có viền','clean'),('Thông báo vạch đỏ','notice'),('Vàng sang trọng','gold'),('Nhãn nền tối','label'),('Xanh ngọc','neon')]:preset.addItem(label,key)
         preset.currentIndexChanged.connect(lambda:self.apply_preset(preset.currentData()));form.addRow('Mẫu trang trí',preset)
         text=add('text','Nội dung',QPlainTextEdit());text.setMaximumHeight(110)
@@ -61,7 +61,9 @@ class LayersPanel(QWidget):
             elif isinstance(widget,QCheckBox):widget.toggled.connect(self.edit)
             elif isinstance(widget,QDoubleSpinBox):widget.valueChanged.connect(self.edit)
             elif isinstance(widget,(QLineEdit,QPlainTextEdit)):widget.textChanged.connect(self.edit)
-        self.loading=False;self.refill()
+        from .workflow_ui import fold_rows
+        self.advanced=fold_rows(self.editor,{self.controls[k] for k in ('name','enabled','text','icon','font','size','align','color')}|{preset,self.logo_label,self.logo_button},'Vị trí, thời gian và trang trí')
+        self.loading=False;self.update_sidebar_rows();self.refill()
 
     @property
     def selected(self):
@@ -74,7 +76,7 @@ class LayersPanel(QWidget):
 
     def select(self,*args):
         if self.loading:return
-        self.loading=True;v=self.selected;self.editor.setEnabled(v is not None)
+        self.loading=True;v=self.selected;self.editor.setEnabled(v is not None);self.editor.setVisible(v is not None);self.place_button.setEnabled(v is not None)
         if v:
             for key,widget in self.controls.items():
                 value=v[key]
@@ -84,9 +86,22 @@ class LayersPanel(QWidget):
                 elif isinstance(widget,QDoubleSpinBox):widget.setValue(value)
                 elif isinstance(widget,QPlainTextEdit):widget.setPlainText(value)
                 else:widget.setText(value)
-            self.logo_label.setText(v['image']);self.logo_label.setVisible(v['kind']=='image');self.logo_button.setVisible(v['kind']=='image')
+            self.logo_label.setText(v['image'])
+            text_only={'text','font','size','align','bold','outline','shadow','outline_color','accent','accent_color'}
+            for key,widget in self.controls.items():
+                visible=v['kind']=='text' if key in text_only else (v['kind']=='icon' if key=='icon' else v['kind']!='image' if key=='color' else True)
+                self.set_row_visible(widget,visible)
+            for widget in (self.logo_label,self.logo_button):self.set_row_visible(widget,v['kind']=='image')
+            self.set_row_visible(self.text_preset,v['kind']=='text')
+            self.text_preset.blockSignals(True);self.text_preset.setCurrentIndex(0);self.text_preset.blockSignals(False)
         self.loading=False;self.selectionChanged.emit()
 
+    @staticmethod
+    def set_row_visible(widget,visible):
+        layout=widget.parentWidget().layout()
+        if isinstance(layout,QFormLayout):layout.setRowVisible(widget,visible)
+    def update_sidebar_rows(self):
+        for widget in (self.bar_side,self.bar_width,self.bar_color):self.set_row_visible(widget,self.bar_on.isChecked())
     def edit(self,*args):
         if self.loading or not self.selected:return
         v=copy.deepcopy(self.selected)
@@ -138,7 +153,7 @@ class LayersPanel(QWidget):
         if self.selected:self.selected.update(start=0.,end=max(.001,self.duration));self.select();self.emit()
     def update_sidebar(self,*args):
         if self.loading:return
-        self.sidebar=dict(enabled=self.bar_on.isChecked(),side=self.bar_side.currentData(),width=self.bar_width.value(),color=self.bar_color.text());self.emit()
+        self.sidebar=dict(enabled=self.bar_on.isChecked(),side=self.bar_side.currentData(),width=self.bar_width.value(),color=self.bar_color.text());self.update_sidebar_rows();self.emit()
     def place_in_sidebar(self):
         if not self.selected:return
         self.bar_on.setChecked(True);self.update_sidebar()
@@ -152,4 +167,4 @@ class LayersPanel(QWidget):
         i=self.list.currentRow();self.layers=copy.deepcopy(p.overlays);self.sidebar=sidebar_settings(p.sidebar);self.loading=True
         self.bar_on.setChecked(self.sidebar['enabled']);self.bar_side.setCurrentIndex(self.bar_side.findData(self.sidebar['side']));self.bar_width.setValue(self.sidebar['width']);self.bar_color.setText(self.sidebar['color'])
         for key in ('start','end'):self.controls[key].setMaximum(max(1,self.duration))
-        self.loading=False;self.refill(i)
+        self.loading=False;self.update_sidebar_rows();self.refill(i)
