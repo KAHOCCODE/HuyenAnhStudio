@@ -450,6 +450,12 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
     from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
     capacity=max(1,min(6,p.tts_workers));gate=TTSCooldown(capacity)
     errors=[];unique={raw_key(c,p):c for c in spoken};pending=[];done=0;total=len(unique);began=time.monotonic()
+    cue_numbers={c.id:i+1 for i,c in enumerate(p.cues)}
+    key_cues={key:[] for key in unique}
+    for c in spoken:key_cues[raw_key(c,p)].append(c)
+    error_path=cache/'voice-errors.json'
+    try:stored_errors=json.loads(error_path.read_text(encoding='utf-8'))
+    except (OSError,ValueError):stored_errors={}
     for key,c in unique.items():
         if (cache/(key+'.mp3')).is_file() and (cache/(key+'.mp3')).stat().st_size>0:done+=1
         else:pending.append((key,c))
@@ -459,7 +465,7 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
         key,c=pair;raw=cache/(key+'.mp3');temp=raw.with_suffix('.partial.mp3')
         try:
             if cancel.is_set():raise InterruptedError('Đã hủy tạo giọng.')
-            _tts_context.gate=gate;_tts_context.report=lambda msg:report(65*done/max(1,total),msg)
+            _tts_context.gate=gate;_tts_context.report=lambda msg:report(65*done/max(1,total),f'Câu {cue_numbers[c.id]} ({stamp(c.start)}) · '+msg)
             asyncio.run(fetch_voice(plain(c.text),c.voice or p.voice,p.tts_rate+c.tts_rate,temp,cancel))
             probe(temp);temp.replace(raw)
             return c.id,None
@@ -485,16 +491,24 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
             while len(futures)<capacity:
                 group=next(((cursor+j)%len(queues) for j in range(len(queues)) if queues[(cursor+j)%len(queues)] and active[(cursor+j)%len(queues)]<limit),None)
                 if group is None:break
-                futures[pool.submit(fetch_one,queues[group].popleft())]=group;active[group]+=1;cursor=(group+1)%len(queues)
+                pair=queues[group].popleft()
+                futures[pool.submit(fetch_one,pair)]=(group,pair[0]);active[group]+=1;cursor=(group+1)%len(queues)
             finished,_=wait(futures,timeout=.2,return_when=FIRST_COMPLETED)
             for future in finished:
-                active[futures.pop(future)]-=1
+                group,key=futures.pop(future);active[group]-=1
                 id,error=future.result();done+=1
+                error_changed=False
+                for c in key_cues[key]:
+                    if error:
+                        stored_errors[c.id]=dict(key=key,error=error);error_changed=True
+                    elif c.id in stored_errors:
+                        del stored_errors[c.id];error_changed=True
+                if error_changed:atomic_json(error_path,stored_errors)
                 if error:
                     if only_id:raise RuntimeError(error)
-                    errors.append(dict(id=id,error=error))
+                    errors.extend(dict(id=c.id,error=error) for c in key_cues[key])
                 elapsed=round(time.monotonic()-began)
-                report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(errors)} lỗi'+(' · '+error[:65] if error else ''))
+                report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(errors)} lỗi'+(f' · Câu {cue_numbers[id]} ({stamp(unique[key].start)}) · '+error if error else ''))
     if only_id:
         row=prepare_voice_row(spoken[0],p,cache,cancel)
         if row:

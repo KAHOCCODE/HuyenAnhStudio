@@ -749,7 +749,7 @@ class Window(QMainWindow):
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
         self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.2'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.3'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -1695,7 +1695,7 @@ class Window(QMainWindow):
             n=sum(table.item(i,0) is not None and table.item(i,0).checkState()==Qt.Checked for i in range(table.rowCount()));k=workers.value()
             if not parallel.isChecked():text=f'Tuần tự: tối đa {k} câu của lô 1, xong mới tới lô 2. Không có hai lô chạy cùng lúc.'
             else:text=f'Dùng chung: tối đa {k} câu cho tổng {n} lô. Xếp xen kẽ các lô, không nhân số kết nối theo số lượt.'
-            hint.setText(text+'\nKhởi đầu 1 câu rồi tăng dần. Khi lỗi tạm thời, tất cả cùng chờ và chỉ 1 câu thử lại; lỗi 403 dừng ngay. MP3 đã có luôn được giữ.')
+            hint.setText(text+'\nNoAudioReceived: thử lại riêng câu lỗi tối đa 9 lần, các câu khác tiếp tục. Lỗi mạng/429 dùng thời gian chờ chung; lỗi 403 dừng ngay. MP3 đã có luôn được giữ.')
         parallel.toggled.connect(explain);workers.valueChanged.connect(explain);table.itemChanged.connect(explain);explain()
         stop=QCheckBox('Chế độ tuần tự: dừng sau lượt còn lỗi');stop.setChecked(True);stop.setEnabled(False);parallel.toggled.connect(lambda on:stop.setEnabled(not on));layout.addWidget(stop)
         def start():
