@@ -173,3 +173,35 @@ Xuất xong, bản hoàn chỉnh được mở trong cửa sổ phát của ứn
 Mức **Nhanh nhất · tự dùng GPU** kiểm tra NVIDIA NVENC, Intel Quick Sync rồi AMD AMF bằng một lượt mã hóa ngắn ở đúng kích thước xuất. Nếu dùng được, app xuất H.264 bằng bộ mã hóa đó; nếu không, dùng CPU ultrafast và ghi lý do vào nhật ký. Hai mức còn lại tiếp tục dùng CPU như trước. Xuất thử cũng kiểm tra GPU.
 
 Tiến độ hiển thị tên bộ mã hóa, tốc độ thực tế (ví dụ 2× nghĩa là xử lý khoảng hai giây video đầu ra mỗi giây) và thời gian còn lại. Ước tính bắt đầu sau 15 giây, vẫn có thể thay đổi theo cảnh. GPU chỉ tăng tốc mã hóa; vùng che, phụ đề, đổi khung và hiệu ứng vẫn xử lý trên CPU. Chất lượng và dung lượng tệp giữa các bộ mã hóa có thể khác nhau. Không có cam kết thời gian xuất cố định.
+
+## Che sub → lật hình → chữ, logo và phụ đề Việt
+
+Thanh thao tác bên dưới preview có bốn bước: **1 · Che sub**, **2 · Lật gương**, **3 · Chữ / logo**, **4 · Chèn SRT**. Vùng che được dựng trên video nguồn trước khi lật. Chữ, logo, biểu tượng thêm bằng bảng mới và phụ đề SRT được ghép trên khung xuất sau bước lật, nên luôn đúng chiều.
+
+### Che phụ đề gốc
+
+Trong **Che phụ đề tiếng Trung**, chọn mờ thường, mờ mềm, ô vuông/mosaic hoặc phủ màu; chỉnh cường độ, màu, độ đậm và vị trí. Có vùng mẫu cho dải dưới rộng/hẹp, dải trên và dải tối dưới hình. Bật **Kéo vùng che** để chỉnh trên tọa độ nguồn; tắt để xem bản dựng đã lật/đổi khung. Nút **2 · Lật gương** tự thoát chế độ đặt vùng che để hiển thị ngay kết quả lật.
+
+**Thêm nhiều vùng che…** quản lý các vùng riêng, có thời gian hiện. Để chỉ che chữ, để trống nội dung chữ thay thế. Mờ hay mosaic chỉ che nội dung bằng hiệu ứng; không phục hồi được hình thật phía sau chữ.
+
+### Chữ / logo / biểu tượng
+
+Bảng này nằm trong app, tự áp dụng vào preview và bản xuất. Có thể thêm nhiều lớp chữ, ảnh logo PNG/JPG/WebP/BMP và năm biểu tượng vẽ sẵn: trái tim, ngôi sao, nút phát, nốt nhạc, thông tin. Mỗi lớp có tên, bật/tắt, mốc đầu/cuối theo giây nguồn, vị trí, kích thước và độ hiện. Dùng **Hiện suốt video** cho nhận diện kênh.
+
+- Chữ có phông, cỡ, đậm, căn trái/giữa/phải, màu, viền, bóng, nền, độ hiện nền, bo góc và vạch dọc. Các mẫu gồm trắng có viền, thông báo vạch đỏ, vàng, nhãn nền tối và xanh ngọc. Hai dòng mẫu “Phim được làm bởi AI / Khán giả trên 18+” có thể sửa tự do, giống ảnh mẫu đã gửi.
+- Chọn lớp rồi kéo ngay trên preview để di chuyển; kéo vùng góc dưới phải để đổi kích thước. Nới chiều cao/rộng nếu chữ bị cắt trong khung. Tọa độ lớp tính theo toàn khung xuất, không đi theo crop hay lật của hình nguồn.
+- Danh sách hỗ trợ nhân đôi, xóa, lên/xuống. Lớp ở cuối danh sách được vẽ trên các lớp trước. Phụ đề SRT luôn nằm trên lớp trang trí.
+- **Dải bên** chừa một phần khung xuất bên phải hoặc bên trái, có màu và độ rộng 10–40%. Bấm **Đặt lớp đang chọn vào dải bên** để chuyển chữ/logo vào đó; việc này cũng áp dụng cho biểu tượng. Kích thước xuất không đổi. Nếu chưa bật tùy chỉnh khung, video giữ đủ hình trong phần còn lại; nếu đã bật, cách crop/fit/nền mờ hiện chọn vẫn được dùng.
+- Ảnh logo được tham chiếu theo đường dẫn gốc. Khi chuyển dự án sang máy khác, giữ ảnh hoặc chọn lại ảnh qua **Chọn / thay ảnh logo**. Các lớp và dải bên được lưu trong `.ha.json`, hỗ trợ hoàn tác.
+
+Chữ/logo tĩnh được vẽ thành ảnh một lần cho mỗi lần dựng, ghép các lớp liền nhau có cùng mốc thời gian để giảm số bước xử lý. Preview dùng cùng thứ tự ghép với bản xuất, ở độ phân giải thấp hơn.
+
+### Phụ đề Việt
+
+Nhập SRT bằng **4 · Chèn SRT**, rồi chỉnh tại **Phụ đề**. Có sáu mẫu: trắng viền đen, vàng viền đen, trắng nền tối, trắng ngà điện ảnh, xanh ngọc viền tím, hồng nhạt nền tím. Có thể chỉnh màu viền/nền, in nghiêng, giãn chữ và thời gian hiện/ẩn mềm 0–500 ms. Chữ được dựng sau bước lật. Khi có dải bên, vị trí và vùng xuống dòng của phụ đề dựa trên phần video còn lại.
+
+### Chỉ giữ lời nói
+
+**Chỉ giữ lời nói · nền 0%…** mở bộ tách nhạc với mức trộn lại nền bằng 0. Phần giọng đã tách được dùng trực tiếp, không đọc và trộn lại toàn bộ âm gốc thêm lần nữa. Có tùy chọn lọc nhẹ tiếng ù/nhiễu sau tách; nên nghe thử vì lọc có thể làm giọng mỏng đi. Các đoạn AI đã xử lý được dùng lại khi đổi mức giữ nền hoặc bật lọc, không chạy lại AI cho đoạn đã hoàn tất.
+
+Đây vẫn là bộ tách AI đang dùng, không có cam kết xóa sạch mọi tiếng động hay giữ nguyên hoàn toàn lời thoại. Hãy dùng lượt thử 30 giây và so sánh âm gốc/kết quả trước khi xử lý toàn bộ. **Tắt âm thanh gốc** là lựa chọn riêng để bỏ toàn bộ tiếng trong video, chỉ giữ voice Việt khi xuất kèm voice.

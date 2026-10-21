@@ -1,6 +1,7 @@
 """Validated, non-destructive picture transforms for FFmpeg exports."""
 import math
 import re
+from .composition import sidebar_settings
 
 DEFAULTS = dict(enabled=False, size='source', width=1920, height=1080,
                 layout='crop', zoom=1.0, x=50.0, y=50.0, flip=False,
@@ -59,6 +60,9 @@ def picture_filter(p, source, target='[picture]'):
     """Flip is applied by the caller before source-space replacement text."""
     v = settings(p.video_effects)
     w, h = output_size(p)
+    final_w=w;bar=sidebar_settings(p.sidebar)
+    if not v['enabled']:v=settings({'layout':'fit'} if bar['enabled'] else {})
+    if bar['enabled']:w=max(2,int(w*(1-bar['width']/100))//2*2)
     z, x, y = v['zoom'], v['x'] / 100, v['y'] / 100
     parts = []
     chain = []
@@ -107,5 +111,7 @@ def picture_filter(p, source, target='[picture]'):
         parts.append('[canvas]null' + target)
     # Scaling to even dimensions may introduce a non-square sample aspect ratio.
     parts = [part.replace(target, '[effect_output]') for part in parts]
-    parts.append('[effect_output]setsar=1' + target)
+    finish='setsar=1'
+    if bar['enabled']:finish+=f",pad={final_w}:{h}:{final_w-w if bar['side']=='left' else 0}:0:color={bar['color']}"
+    parts.append('[effect_output]'+finish+target)
     return ';'.join(parts)
