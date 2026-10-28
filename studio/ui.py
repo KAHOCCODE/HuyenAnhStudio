@@ -534,6 +534,8 @@ class Window(QMainWindow):
         self.player=QMediaPlayer(self);self.audio=QAudioOutput(self);self.player.setAudioOutput(self.audio)
         self.voice_player=QMediaPlayer(self);self.voice_audio=QAudioOutput(self);self.voice_player.setAudioOutput(self.voice_audio)
         self.sample_player=QMediaPlayer(self);self.sample_audio=QAudioOutput(self);self.sample_player.setAudioOutput(self.sample_audio)
+        self._sample_voice=False;self._voice_gain_ready=True;self._resume_voice_gain=False
+        self.voice_gain_timer=QTimer(self);self.voice_gain_timer.setSingleShot(True);self.voice_gain_timer.timeout.connect(self.prepare_voice_preview)
         self._preview_offset_ms=0;self._preview_end=None;self._batch_segment=None;self._voice_offset_ms=0;self._load_batch_resume=None
         self.cpu_mode=False;self.cpu_decoder=None;self.cpu_pending=None;self._cpu_seek_target=0
         self.build();self.video_sink=QVideoSink(self);self.player.setVideoSink(self.video_sink);self.frame_count=0
@@ -634,7 +636,9 @@ class Window(QMainWindow):
         menu.addAction('Câu thiếu / thử lại câu lỗi…',self.audit_voice_dialog);menu.addAction('Câu quá dài…',self.overflow_dialog);menu.addAction('Lưu giọng đọc WAV…',self.save_voice);tools.setMenu(menu);vf.addRow(tools)
         self.vol=self.spin(0,100,12,0,self.settings_changed);vf.addRow('Âm video gốc (%)',self.vol)
         self.mute_original=QCheckBox('Tắt âm thanh gốc');self.mute_original.toggled.connect(self.settings_changed);vf.addRow(self.mute_original)
-        self.vvol=self.spin(0,100,100,0,self.settings_changed);vf.addRow('Giọng Việt (%)',self.vvol)
+        self.vvol=self.spin(0,VOICE_VOLUME_MAX*100,100,0,self.voice_volume_changed);self.vvol.setSingleStep(25);self.vvol.setKeyboardTracking(False)
+        self.vvol.setToolTip('100%: giữ mức gốc. 200%: khuếch đại 2 lần; tối đa 600%. Có giới hạn đỉnh khi tăng âm. Dùng khi nghe, xuất video và lưu WAV; dùng lại giọng đã tạo.')
+        vf.addRow('Giọng Việt (%)',self.vvol)
         vf.addRow(self.button('Giảm nền / chỉ giữ lời nói…',self.music_dialog))
         self.workers=self.spin(1,6,3,0,self.settings_changed);vf.addRow('Số câu tạo cùng lúc',self.workers)
         self.maxfit=self.spin(1,3,1.6,2,self.settings_changed);vf.addRow('Giới hạn ép câu ×',self.maxfit)
@@ -710,7 +714,7 @@ class Window(QMainWindow):
         if not self.p.has_audio:audio='video không có tiếng gốc'
         if self.p.has_audio and self.p.music_clean.get('enabled') and self.p.original_gain:audio+=' · đã giảm nền'
         self.preview.update_subtitle_box()
-        self.export_summary.setText(f'Kích thước: {w} × {h}\nNguồn: {stamp(self.p.duration)}\nBản xuất: {stamp(self.p.output_duration)} · tốc độ {self.p.speed:.3f}×\nÂm thanh: {audio}'+(' + giọng Việt' if self.include_voice.isChecked() else ''))
+        self.export_summary.setText(f'Kích thước: {w} × {h}\nNguồn: {stamp(self.p.duration)}\nBản xuất: {stamp(self.p.output_duration)} · tốc độ {self.p.speed:.3f}×\nÂm thanh: {audio}'+(f' + giọng Việt {self.p.voice_volume*100:.0f}%' if self.include_voice.isChecked() else ''))
     def export_voice_changed(self,*args):
         self._export_voice_manual=True;self.refresh_workflow()
     def export_workflow(self):
@@ -749,7 +753,7 @@ class Window(QMainWindow):
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
         self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.3'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.4'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -879,6 +883,37 @@ class Window(QMainWindow):
         if self.syncing:return
         if self.busy:self.load_controls();return
         self.push_undo();self.p.work_speed=self.work.value();self.p.final_speed=self.final.value() if self.final.value()!=round(self.p.final_speed,4) else self.p.final_speed;self.p.voice=self.voice.currentData();self.p.tts_rate=round(self.rate.value());self.p.tts_workers=round(self.workers.value());self.p.max_fit=self.maxfit.value();self.p.original_volume=self.vol.value()/100;self.p.original_muted=self.mute_original.isChecked();self.vol.setEnabled(not self.p.original_muted);self.p.voice_volume=self.vvol.value()/100;self.changed()
+    def voice_volume_changed(self,*args):
+        if self.syncing:return
+        if self.busy:self.load_controls();return
+        self._resume_voice_gain=self._resume_voice_gain or self.player.playbackState()==QMediaPlayer.PlayingState
+        self.player.pause();self.voice_player.pause()
+        if self._sample_voice:self.sample_player.stop()
+        self.settings_changed()
+        if voice_ready(self.p,self.cache):
+            target=voice_playback_path(voice_track_path(self.cache),self.p.voice_volume,self.cache)
+            if self.p.voice_volume<=1 or target.is_file() and target.stat().st_size>44:self.prepare_voice_preview()
+            else:self.voice_gain_timer.start(350)
+        else:
+            resume=self._resume_voice_gain;self._resume_voice_gain=False
+            if resume:self.player.play()
+    def prepare_voice_preview(self,after=None):
+        self.voice_gain_timer.stop()
+        if self.busy:return
+        resume=self._resume_voice_gain or self.player.playbackState()==QMediaPlayer.PlayingState
+        self._resume_voice_gain=False
+        if not voice_ready(self.p,self.cache):
+            if after:after()
+            return
+        source=voice_track_path(self.cache);gain=self.p.voice_volume;cache=self.cache
+        target=voice_playback_path(source,gain,cache)
+        def done(path):
+            self.refresh_voice_state();self.sync_voice(force=True)
+            if after:after()
+            elif resume:self.player.play()
+        if gain<=1 or target.is_file() and target.stat().st_size>44:done(str(target));return
+        self.start_job(lambda c,r:prepare_voice_playback(source,gain,cache,c,r),done,
+                       f'Chuẩn bị giọng Việt {gain*100:.0f}% · dùng lại âm thanh đã tạo')
     def restore_speed(self):
         if not self.guard():return
         self.push_undo();self.p.final_speed=1/self.p.work_speed
@@ -891,6 +926,7 @@ class Window(QMainWindow):
         self._nominal_rates=rates
         if altered:self.player.setPlaybackRate(video_rate);self.voice_player.setPlaybackRate(voice_rate)
         self.audio.setVolume(self.p.original_gain);self.voice_audio.setVolume(min(1,self.p.voice_volume))
+        if self._sample_voice:self.sample_audio.setVolume(min(1,self.p.voice_volume))
         self.work_hint.setText(f'Mỗi 1 giây nguồn có {1/self.p.work_speed:.2f} giây để đọc. Thời lượng dựng: {stamp(self.p.duration/self.p.work_speed)}.\nĐổi tốc độ rồi bấm Tạo / cập nhật giọng đọc để ghép lại theo mốc mới.')
         self.speed_label.setText(f'Bản cuối: {self.p.speed:.3f}× tốc độ gốc\nThời lượng: {stamp(self.p.output_duration)}\nVoice bản cuối nhanh thêm {self.p.final_speed:.3f}× so với lúc dựng.')
         self.on_position(self.source_position())
@@ -912,7 +948,7 @@ class Window(QMainWindow):
         if device.isNull():self.error('Windows chưa có thiết bị phát âm thanh khả dụng. Chọn loa/tai nghe trong cài đặt âm thanh rồi thử lại.');return
         was_playing=self.player.playbackState()==QMediaPlayer.PlayingState
         self.player.pause();self.voice_player.pause();self.sample_player.stop()
-        for player,attr,volume in [(self.player,'audio',self.p.original_gain),(self.voice_player,'voice_audio',min(1,self.p.voice_volume)),(self.sample_player,'sample_audio',1.)]:
+        for player,attr,volume in [(self.player,'audio',self.p.original_gain),(self.voice_player,'voice_audio',min(1,self.p.voice_volume)),(self.sample_player,'sample_audio',min(1,self.p.voice_volume) if self._sample_voice else 1.)]:
             old=getattr(self,attr);new=QAudioOutput(device,self);new.setVolume(volume);player.setAudioOutput(new);setattr(self,attr,new);old.deleteLater()
         self.status.setText('Đã chọn lại âm thanh: '+device.description());self.log(self.status.text())
         if was_playing:self.player.play()
@@ -961,7 +997,7 @@ class Window(QMainWindow):
     def music_dialog(self,checked=False,sample=None,speech_only=False):
         if not self.guard():return
         if not self.p.video or not self.p.has_audio:self.error('Hãy mở video có âm thanh trước.');return
-        self.player.pause();self.voice_player.pause();self.sample_player.stop()
+        self.player.pause();self.voice_player.pause();self.sample_player.stop();self._sample_voice=False
         dialog=QDialog(self);dialog.setWindowTitle('Giữ lời nói / giảm nhạc');dialog.resize(570,360)
         layout=QVBoxLayout(dialog)
         note=QLabel('AI ưu tiên giữ tiếng nói và giảm nhạc. Một số hiệu ứng có thể mất.\nGiữ một phần âm nền giúp còn hiệu ứng nhưng cũng còn nhạc.\nXử lý một lần; dùng lại khi phát và xuất, không phụ thuộc các lô voice Việt.')
@@ -1165,8 +1201,8 @@ class Window(QMainWindow):
     def ensure_review(self,callback):
         if not self.guard():return
         if self.editor_dirty and not self.commit_editor():return
-        if voice_ready(self.p,self.cache):self.refresh_voice_state();callback();return
-        if cached_voice_exists(self.p,self.cache):self.rebuild_existing(after=callback)
+        if voice_ready(self.p,self.cache):self.prepare_voice_preview(after=callback);return
+        if cached_voice_exists(self.p,self.cache):self.rebuild_existing(after=lambda:self.ensure_review(callback))
         else:callback()
     def rebuild_existing(self,checked=False,after=None):
         if not self.guard():return
@@ -1187,7 +1223,7 @@ class Window(QMainWindow):
     def check_video_frames(self):
         if not self.cpu_mode and not self.frame_count and self.player.playbackState()==QMediaPlayer.PlayingState:self.switch_cpu()
     def sync_voice(self,force=False):
-        if not getattr(self,'voice_is_ready',False) or self.busy:self.voice_player.pause();return
+        if not getattr(self,'voice_is_ready',False) or not self._voice_gain_ready or self.busy:self.voice_player.pause();return
         base=self.play_speed();voice_rate=self.p.final_speed if self.preview_mode.currentIndex()==1 else 1
         target=round(((self.source_position() if hasattr(self,'source_position') else self.player.position())-getattr(self,'_voice_offset_ms',0))/self.p.work_speed)
         now=time.monotonic()
@@ -1211,7 +1247,11 @@ class Window(QMainWindow):
         batch=None;ready=voice_ready(self.p,self.cache);self._voice_offset_ms=0
         was_ready=getattr(self,'voice_is_ready',False);self.voice_is_ready=ready
         if was_ready and not ready:self.player.setPlaybackRate(self.play_speed())
-        src=QUrl.fromLocalFile(str(voice_track_path(self.cache))) if ready else QUrl()
+        src=QUrl();self._voice_gain_ready=not ready
+        if ready:
+            source=voice_track_path(self.cache);target=voice_playback_path(source,self.p.voice_volume,self.cache)
+            self._voice_gain_ready=self.p.voice_volume<=1 or target.is_file() and target.stat().st_size>44
+            if self._voice_gain_ready:src=QUrl.fromLocalFile(str(target))
         if self.voice_player.source()!=src:self.voice_player.setSource(src)
         if hasattr(self,'voice_summary'):
             spoken=[c for c in self.p.cues if plain(c.text)];bad=sum(self.row_status(c)[0]=='long' for c in spoken)
@@ -1775,8 +1815,12 @@ class Window(QMainWindow):
         p=copy.deepcopy(self.p);id=self.selected
         def done(result):
             row=result['sample'];self.rows[id]=row;self.model.refresh();self.timeline.update()
-            src=row['path'];self.sample_player.setSource(QUrl.fromLocalFile(src));self.sample_player.setPlaybackRate(self.p.final_speed if self.preview_mode.currentIndex()==1 else 1);self.sample_player.play();self.status.setText(f'Nghe câu đã khớp ({row["factor"]:.2f}×)' if row['ok'] else f'Câu quá dài ({row["factor"]:.2f}×) — nghe đủ lời ở tốc độ giới hạn')
-        self.start_job(lambda c,r:generate_voices(p,self.cache,c,r,id),done,'Tạo giọng câu đang chọn')
+            src=result['playback'];self._sample_voice=True;self.sample_audio.setVolume(min(1,self.p.voice_volume));self.sample_player.setSource(QUrl.fromLocalFile(src));self.sample_player.setPlaybackRate(self.p.final_speed if self.preview_mode.currentIndex()==1 else 1);self.sample_player.play();self.status.setText(f'Nghe câu đã khớp ({row["factor"]:.2f}×)' if row['ok'] else f'Câu quá dài ({row["factor"]:.2f}×) — nghe đủ lời ở tốc độ giới hạn')
+        def work(cancel,report):
+            result=generate_voices(p,self.cache,cancel,report,id)
+            result['playback']=prepare_voice_playback(result['sample']['path'],p.voice_volume,self.cache,cancel,report)
+            return result
+        self.start_job(work,done,'Tạo giọng câu đang chọn')
     def export(self,checked=False,voice_choice=None,preserve_original=False,show_result=False):
         if not self.guard():return
         if self.editor_dirty and not self.commit_editor():return
@@ -1820,12 +1864,15 @@ class Window(QMainWindow):
             source=voice_track_path(self.cache);name='Voice-Viet.wav';title='Lưu voice toàn phim theo tốc độ dựng'
         path,_=QFileDialog.getSaveFileName(self,title,name,'Wave (*.wav)')
         if path:
-            if Path(path).resolve()!=source.resolve():shutil.copy2(source,path)
-            self.log('Đã lưu voice WAV theo tốc độ dựng: '+path)
+            if not path.lower().endswith('.wav'):path+='.wav'
+            if Path(path).resolve()==source.resolve():self.error('Chọn tệp WAV khác để giữ lại giọng gốc.');return
+            gain=self.p.voice_volume
+            self.start_job(lambda c,r:write_voice_audio(source,path,gain,c,r),
+                           lambda out:self.log(f'Đã lưu voice WAV {gain*100:.0f}% theo tốc độ dựng: '+out),'Lưu giọng Việt theo âm lượng đã chọn')
     def closeEvent(self,event):
         if self.busy:self.error('Hãy hủy hoặc đợi tác vụ hoàn tất trước khi đóng.');event.ignore();return
         if not self.confirm_discard():event.ignore();return
-        self.close_cpu();self.player.stop();self.voice_player.stop();self.sample_player.stop();event.accept()
+        self.voice_gain_timer.stop();self.close_cpu();self.player.stop();self.voice_player.stop();self.sample_player.stop();event.accept()
 
 def voice_ready_cached(win):return getattr(win,'voice_is_ready',False)
 

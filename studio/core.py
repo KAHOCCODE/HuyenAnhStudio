@@ -10,6 +10,19 @@ from .tts import TTSCooldown, TTSServiceError, fetch_voice, context as _tts_cont
 
 RATE = 24000
 ROOT = Path(__file__).resolve().parent.parent
+VOICE_VOLUME_MAX = 6.0
+AUDIO_LIMITER = 'alimiter=limit=0.97:level=false:latency=true'
+
+
+def validate_voice_volume(value):
+    if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not 0<=value<=VOICE_VOLUME_MAX:
+        raise ValueError('Âm lượng giọng Việt phải từ 0 đến 600%.')
+    return float(value)
+
+
+def voice_volume_filter(value):
+    gain=validate_voice_volume(value)
+    return f'volume={gain:.6f}'+(','+AUDIO_LIMITER if gain>1 else '')
 
 @dataclass
 class Cue:
@@ -84,6 +97,7 @@ class Project:
         if not isinstance(p.music_clean,dict):raise ValueError('Cấu hình giảm nhạc không hợp lệ.')
         if p.export_preset not in ('ultrafast','veryfast','medium'):raise ValueError('Chế độ xuất không hợp lệ.')
         if not isinstance(p.original_muted,bool):raise ValueError('Trạng thái tắt âm gốc không hợp lệ.')
+        validate_voice_volume(p.voice_volume)
         effect_settings(p.video_effects)
         validate_composition(p)
         for region in p.screen_regions:validate_screen_region(region,p.duration)
@@ -440,6 +454,46 @@ def voice_track_path(cache):
     m=load_manifest(cache)
     return Path(m.get('track') or Path(cache)/'voice.wav')
 
+
+def voice_playback_path(source,gain,cache):
+    """Qt output volume stops at 1; boost PCM separately and retain the raw voice."""
+    gain=validate_voice_volume(gain);source=Path(source)
+    if gain<=1:return source
+    stat=source.stat()
+    key=hashlib.sha256(json.dumps([str(source.resolve()),stat.st_size,stat.st_mtime_ns,'gain-v1']).encode()).hexdigest()[:24]
+    return Path(cache)/'voice-gain'/key/(f'{gain:.6f}'+'.wav')
+
+
+def write_voice_audio(source,out,gain,cancel,report):
+    """Apply the same gain/peak protection used by video export, without new TTS."""
+    gain=validate_voice_volume(gain);source=Path(source);out=Path(out)
+    if out.resolve()==source.resolve():raise ValueError('Chọn tệp WAV khác để giữ lại giọng gốc.')
+    out.parent.mkdir(parents=True,exist_ok=True);temp=out.with_suffix('.partial.wav')
+    try:
+        if cancel.is_set():raise InterruptedError('Đã hủy tăng âm; giọng gốc được giữ nguyên.')
+        duration=probe(source)['duration']
+        run([binary('ffmpeg'),'-y','-nostdin','-i',source,'-map','0:a:0','-vn',
+             '-af',voice_volume_filter(gain),'-ar',str(RATE),'-ac','1','-c:a','pcm_s16le',
+             '-progress','pipe:1','-nostats',temp],cancel,
+            progress=lambda n:report(n,f'Chuẩn bị giọng Việt {gain*100:.0f}% · chỉ xử lý âm thanh'),total=duration)
+        if cancel.is_set():raise InterruptedError('Đã hủy tăng âm; giọng gốc được giữ nguyên.')
+        temp.replace(out);report(100,f'Giọng Việt {gain*100:.0f}% đã sẵn sàng')
+        return str(out)
+    finally:temp.unlink(missing_ok=True)
+
+
+def prepare_voice_playback(source,gain,cache,cancel,report):
+    target=voice_playback_path(source,gain,cache)
+    if gain<=1 or target.is_file() and target.stat().st_size>44:return str(target)
+    result=write_voice_audio(source,target,gain,cancel,report)
+    # Keep at most two gain copies per source; long films need not accumulate copies.
+    others=sorted((p for p in target.parent.glob('*.wav') if p!=target and '.partial.' not in p.name),key=lambda p:p.stat().st_mtime_ns,reverse=True)
+    for old in others[1:]:
+        try:old.unlink()
+        except OSError:pass  # A player on Windows can still hold the previous file.
+    return result
+
+
 def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=None,mix=True,parallel_segments=None):
     cache=Path(cache);cache.mkdir(parents=True,exist_ok=True)
     chosen=set(only_ids) if only_ids is not None else None
@@ -554,6 +608,7 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
 
 def check_project(p):
     if not p.video or not Path(p.video).is_file(): raise ValueError('Hãy chọn video đang tồn tại.')
+    validate_voice_volume(p.voice_volume)
     effect_settings(p.video_effects)
     validate_composition(p,files=True)
     for r in p.screen_regions:validate_screen_region(r,p.duration)
@@ -628,8 +683,8 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
     if p.has_audio and p.original_gain>0:
         graph+=f';[{source_audio}]asetpts=PTS-STARTPTS,{atempo(p.speed)},volume={p.original_gain},apad,atrim=duration={duration:.6f}[original]';audios.append('[original]')
     if with_voice:
-        graph+=f';[1:a]asetpts=PTS-STARTPTS,{atempo(p.final_speed)},volume={p.voice_volume},apad,atrim=duration={duration:.6f}[voice]';audios.append('[voice]')
-    if audios: graph+=';'+''.join(audios)+f'amix=inputs={len(audios)}:duration=longest:normalize=0,alimiter=limit=0.97:level=false:latency=true[a]'
+        graph+=f';[1:a]asetpts=PTS-STARTPTS,{atempo(p.final_speed)},{voice_volume_filter(p.voice_volume)},apad,atrim=duration={duration:.6f}[voice]';audios.append('[voice]')
+    if audios: graph+=';'+''.join(audios)+f'amix=inputs={len(audios)}:duration=longest:normalize=0,{AUDIO_LIMITER}[a]'
     (job/'filters.txt').write_text(graph,encoding='utf-8')
     args+=['-filter_complex_script','filters.txt','-map','[v]']
     if audios: args+=['-map','[a]','-c:a','aac','-b:a','192k']
