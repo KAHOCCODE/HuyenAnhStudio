@@ -1,4 +1,33 @@
-# HUYỄN ẢNH Studio — bản 0.1.0
+# HUYỄN ẢNH Studio — bản 0.3.0
+
+## Mới: giữ tốc độ đọc, làm chậm video cục bộ
+
+- Giữ hai giọng Edge TTS hiện tại: Nam Minh và Hoài My. Không thêm dịch vụ trả phí.
+- Trong **Lồng tiếng Edge TTS**, bật **Câu dài: làm chậm video, giữ giọng** (mặc định bật). Khi câu đọc dài hơn khoảng hình dành cho câu đó, app kéo dài đúng khoảng hình bằng cách phát chậm. Các câu sau và phụ đề được dời theo cùng đồng hồ mới; không tăng tốc TTS để nhét vào câu.
+- Ví dụ câu từ `00:00:02,433` đến `00:00:03,233` có voice dài 2,567 giây: đoạn hình 0,8 giây được kéo thành 2,567 giây, kết thúc ở `00:00:05,000`; toàn bộ phần sau dời thêm 1,767 giây.
+- Nếu SRT có các câu chồng mốc, phần hình của câu trước dừng ở mốc bắt đầu câu sau. Các câu cùng mốc bắt đầu được đọc lần lượt theo thứ tự SRT, có khoảng nghỉ 40 ms, trong cùng đoạn hình được kéo dài.
+- Sau khi tạo/sửa voice, bấm **Phát** hoặc **Câu quá dài…** để ghép và tính lại thời gian. MP3 đã tạo được dùng lại, không gọi lại dịch vụ chỉ vì đổi cách đồng bộ.
+- Timeline và các ô sửa vẫn dùng **mốc video gốc**. Khi lưu SRT chọn **Mốc bản cuối** để lấy mốc đã kéo giãn; SRT nguồn và dữ liệu mốc gốc không bị sửa chồng lên nhau.
+- Xem trước dùng tốc độ video thay đổi theo từng đoạn. **Xuất vùng chọn / thử 10 giây** là cách kiểm tra bằng bộ dựng FFmpeg thật; vùng 10 giây nguồn có thể dài hơn 10 giây sau kéo giãn.
+- **Tốc độ đọc (%)** vẫn là điều chỉnh bạn chủ động chọn. **Tăng tốc bản cuối ×** vẫn tác động cả hình lẫn voice; để `1,00×` nếu muốn giữ tốc độ giọng đã tạo.
+- Tắt tùy chọn làm chậm video để dùng cách ép tốc độ giọng cũ. Cách cũ vẫn có thể tràn lời khi vượt giới hạn ép câu.
+- **Tắt âm gốc khi lồng tiếng** mặc định bật để tiếng Trung không chồng với tiếng Việt. Tùy chọn này tắt cả nhạc và hiệu ứng gốc, không tách riêng tiếng nói. Bỏ chọn để trộn âm gốc theo mức **Âm gốc (%)**; khi đó tiếng Trung cũng có thể nghe thấy. Xuất không kèm voice vẫn giữ âm gốc theo mức đã chọn.
+- Xuất chỉ một phần dùng mốc gốc của vùng đã chọn; lời nằm ngoài biên vùng sẽ được cắt theo biên đó. Xuất toàn video giữ đủ câu đọc cuối cùng.
+- Xuất được chia thành các đoạn nhỏ, xử lý lần lượt với giới hạn luồng để giảm tải máy RAM 8 GB. Các đoạn chỉ mã hóa hình một lần; ghép cuối không mã hóa lại hình. Cần dung lượng đĩa tạm cho các đoạn trung gian. Video xuất giữ tỉ lệ khung nguồn và dùng 30 khung hình/giây; đoạn làm chậm có thể thấy lặp khung, không có nội suy chuyển động AI.
+
+## Mới: cắt khung và lật ngang
+
+- **Mở rộng khung xem** chỉ thay bố cục giao diện; tên mới giúp phân biệt với phóng/cắt hình thật.
+- Trong **Cắt khung & lật hình**, tăng **Phóng để cắt ×** rồi chỉnh vị trí ngang/dọc để chọn phần hình giữ lại. Hoặc bấm **Chọn khung cắt trên hình**, kéo vùng muốn giữ trên hình gốc. Khung được điều chỉnh theo tỉ lệ video gốc, tối đa phóng 4 lần; phần ngoài khung bị loại bỏ, phần giữ lại được phóng đầy kích thước xuất ban đầu.
+- **Lật ngang video** lật phần hình. Phụ đề tiếng Việt chính được đặt sau bước cắt/lật nên vẫn đọc bình thường. Vùng che bám theo tọa độ hình gốc và được cắt/lật cùng hình.
+- **Khôi phục toàn khung** bỏ cắt và lật. Có hỗ trợ lưu dự án, hoàn tác và làm lại các thay đổi này.
+- Cắt khung, lật hình và thay đổi tốc độ là công cụ biên tập; không có cam kết tránh Content ID.
+
+## Kiểm tra cho người phát triển
+
+Chạy `python -m unittest discover -s tests -v` sau khi cài các thư viện. Các bài kiểm tra dựng video dùng FFmpeg/FFprobe có libass và libx264; không gọi Edge TTS. Chúng kiểm tra ánh xạ thời gian, câu chồng mốc, câu cuối dài, SRT, tương thích dự án cũ, đổi chế độ/dùng lại MP3, xuất vùng, tốc độ bản cuối, tắt âm gốc và xuất nhiều đoạn.
+
+Các mục bên dưới mô tả chức năng nền và cách ép tốc độ giọng cũ. Với chế độ làm chậm video mới đang bật, áp dụng quy tắc đồng bộ ở phần trên.
 
 Ứng dụng desktop dành cho Windows, tập trung vào ghép phụ đề tiếng Việt, che phụ đề có sẵn và lồng tiếng. Bố cục tham khảo cách làm việc của trình dựng video như CapCut: danh sách nguồn/phụ đề ở trái, video ở giữa, thiết lập ở phải, timeline ở dưới. Không phải phần mềm của CapCut.
 
@@ -129,3 +158,4 @@ Muốn tự chạy kiểm tra dành cho phát triển:
 - Qt video: https://doc.qt.io/qtforpython-6/PySide6/QtMultimediaWidgets/QGraphicsVideoItem.html
 
 Ảnh `Giao-dien.png` được chụp từ giao diện thật của ứng dụng, dùng nền minh họa và ba câu mẫu tự tạo; không phải video hay SRT của người dùng.
+
