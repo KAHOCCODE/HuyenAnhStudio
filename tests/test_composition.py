@@ -134,7 +134,7 @@ class CompositionTests(unittest.TestCase):
         from studio import core
         import shutil
         cache=self.root/'fitting-cache';cache.mkdir()
-        p=self.p();p.max_fit=1.2;c1=Cue(0,1,'Câu đầu');c2=Cue(1,2,'Câu tiếp')
+        p=self.p();p.slow_video_for_voice=False;p.max_fit=1.2;c1=Cue(0,1,'Câu đầu');c2=Cue(1,2,'Câu tiếp')
         first=cache/(core.raw_key(c1,p)+'.mp3');second=cache/(core.raw_key(c2,p)+'.mp3')
         subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','sine=frequency=440:duration=1.6',str(first)],check=True)
         shutil.copyfile(first,second)
@@ -145,3 +145,4 @@ class CompositionTests(unittest.TestCase):
         slow2=core.prepare_voice_row(c2,p,cache,threading.Event(),known_duration=1.6)
         self.assertTrue(slow1['ok']);self.assertEqual(slow1['spill'],0)
         self.assertLessEqual(slow1['end'],slow2['start'])
+

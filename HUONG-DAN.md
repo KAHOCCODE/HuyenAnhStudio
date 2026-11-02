@@ -1,4 +1,30 @@
-# HUYỄN ẢNH Studio 0.3.4 — quy trình thống nhất
+# HUYỄN ẢNH Studio 0.3.5 — đồng bộ giọng bằng giãn video
+
+## Cập nhật từ nhánh đang dùng
+
+Đóng ứng dụng rồi chạy trong CMD như trước:
+
+```bat
+cd /d E:\HuyenAnhStudio
+git pull --ff-only origin feat/video-frame-effects
+start.cmd
+```
+
+Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.5. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
+
+## Mới: làm chậm hình thay vì ép nhanh câu đọc
+
+- Ở **4 · Sub và giọng → Âm thanh / giọng đọc**, tùy chọn **Câu dài: làm chậm video, giữ giọng** mặc định bật. App giữ tốc độ giọng đã tạo, kéo dài đoạn hình tương ứng và dời những câu sau cùng phụ đề. Không sửa chồng lên mốc SRT gốc.
+- Ví dụ đoạn `00:00:02,433 → 00:00:03,233` dài 0,8 giây, voice dài 2,567 giây: hình đoạn này phát chậm đến `00:00:05,000`; phần sau dời thêm 1,767 giây.
+- Nếu mốc SRT chồng nhau, khoảng hình của câu trước được giới hạn bởi mốc bắt đầu câu sau. Các câu có cùng mốc bắt đầu được đọc lần lượt theo thứ tự SRT, có khoảng nghỉ 40 ms.
+- Bấm **Phát** hoặc **Câu quá dài…** để ghép lại giọng đã có sau khi chỉnh. MP3 cũ được dùng lại; không gọi lại Edge TTS chỉ vì đổi chế độ đồng bộ. Timeline và các ô sửa vẫn dùng mốc nguồn; khi lưu SRT chọn **Mốc bản cuối** để lấy mốc sau kéo giãn.
+- Giữ **Tăng tốc bản cuối × = 1,00** nếu muốn giữ nguyên tốc độ giọng đã tạo. Tốc độ đọc thủ công và tốc độ bản cuối vẫn có tác dụng khi bạn chủ động chỉnh. Bỏ chọn làm chậm video để dùng chế độ ép giọng cũ.
+- **Tắt âm gốc khi ghép giọng Việt** mặc định bật, tránh thoại Trung nghe chồng lên tiếng Việt. Nó tắt cả nhạc và hiệu ứng gốc, không tách riêng tiếng nói. Bỏ chọn nếu muốn trộn âm nguồn theo mức âm lượng đang đặt. Tùy chọn tắt âm gốc riêng vốn có vẫn được giữ.
+- **Xem thử 10 giây** kiểm tra kết quả dựng bằng FFmpeg. Đoạn nguồn 10 giây có thể dài hơn sau khi giãn. Xuất toàn video giữ đủ câu đọc cuối; xuất vùng chỉ giữ lời trong đúng biên vùng đã chọn.
+- Bản xuất đồng bộ dùng 30 fps, có thể thấy lặp khung ở đoạn chậm; không có nội suy chuyển động AI. Xử lý lần lượt các đoạn nhỏ, hỗ trợ bộ mã hóa GPU đang có và dùng CPU khi không khả dụng. Cần dung lượng đĩa tạm; ghép cuối không mã hóa lại hình.
+- Chỉnh cắt khung/lật vẫn ở **2 · Hình ảnh → Khung và màu**; chữ/logo và phụ đề Việt giữ đúng chiều. Cắt/lật không bảo đảm tránh Content ID.
+
+Kiểm tra dành cho người phát triển: `python -m unittest discover -s tests -v`. Các bài kiểm tra mới dựng video và âm thanh tổng hợp bằng FFmpeg, không gọi Edge TTS; cần thử thêm trên Windows với video thực tế.
 
 Ứng dụng desktop dành cho Windows để chỉnh hình, che phụ đề gốc, thêm chữ/logo, phụ đề Việt và giọng đọc. Giao diện làm việc theo năm bước với một bảng chỉnh cố định bên phải.
 
@@ -91,3 +117,4 @@ Lệnh kiểm tra dành cho phát triển:
 ```
 
 Nguồn kỹ thuật: [FFmpeg](https://ffmpeg.org/ffmpeg-filters.html), [Qt](https://doc.qt.io/qtforpython-6/), [Edge TTS](https://github.com/rany2/edge-tts).
+

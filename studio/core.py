@@ -1,9 +1,10 @@
 """Original-media timestamps are canonical; speed is a non-destructive transform."""
 from __future__ import annotations
-import asyncio, hashlib, json, math, os, re, shutil, subprocess, threading, time, uuid, wave
+import asyncio, copy, hashlib, json, math, os, re, shutil, subprocess, threading, time, uuid, wave
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Callable
+from .retiming import voice_timing, map_time, source_rate
 from .video_effects import settings as effect_settings, output_size, picture_filter
 from .composition import validate_composition, prepare_layers, artwork_filter, sidebar_settings, subtitle_area
 from .tts import TTSCooldown, TTSServiceError, fetch_voice, context as _tts_context, edge_client
@@ -55,6 +56,8 @@ class Project:
     export_preset: str = "veryfast"
     video_effects: dict = field(default_factory=dict)
     max_fit: float = 1.6
+    slow_video_for_voice: bool = True
+    mute_original_when_dubbed: bool = True
     music_clean: dict = field(default_factory=dict)
     music_threads: int = 2
     music_backend: str = "cpu"
@@ -97,6 +100,7 @@ class Project:
         if not isinstance(p.music_clean,dict):raise ValueError('Cấu hình giảm nhạc không hợp lệ.')
         if p.export_preset not in ('ultrafast','veryfast','medium'):raise ValueError('Chế độ xuất không hợp lệ.')
         if not isinstance(p.original_muted,bool):raise ValueError('Trạng thái tắt âm gốc không hợp lệ.')
+        if not isinstance(p.slow_video_for_voice,bool) or not isinstance(p.mute_original_when_dubbed,bool):raise ValueError('Thiết lập đồng bộ voice không hợp lệ.')
         validate_voice_volume(p.voice_volume)
         effect_settings(p.video_effects)
         validate_composition(p)
@@ -152,6 +156,21 @@ def read_srt(path):
 
 def write_srt(path,cues,speed=1):
     Path(path).write_text('\n\n'.join(f'{i+1}\n{stamp(c.start/speed)} --> {stamp(c.end/speed)}\n{c.text}' for i,c in enumerate(cues))+'\n',encoding='utf-8-sig')
+
+def retimed_cues(p,timing):
+    from bisect import bisect_right
+    starts=sorted(r['start'] for r in timing['rows'].values())
+    result=[]
+    for cue in p.cues:
+        c=copy.deepcopy(cue);r=timing['rows'].get(c.id)
+        c.start=r['start'] if r else map_time(timing,c.start)
+        c.end=max(r['end'],r['cue_end']) if r else map_time(timing,c.end)
+        if r:
+            i=bisect_right(starts,c.start+1e-8)
+            if i<len(starts):c.end=min(c.end,starts[i])
+        result.append(c)
+    return result
+
 
 def plain(s):
     import html
@@ -257,7 +276,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         events.append(f'Dialogue: 1,{stamp(r["start"],True)},{stamp(r["end"],True)},Default,,{x},{max(0,w-x-rw)},0,,{{{tags}}}{ass_text(r["text"])}')
     Path(path).write_text(header+'\n'.join(events)+'\n',encoding='utf-8-sig')
 
-def video_filter(p,ass_name='subtitles.ass',assets=None):
+def video_filter(p,ass_name='subtitles.ass',assets=None,finish=True):
     regions=[]
     if p.mask['enabled']:regions.append(dict(p.mask,start=0,end=p.duration,strength=p.mask.get('strength',20)))
     regions.extend(dict(r,fill='#171717') for r in p.screen_regions if r.get('enabled',True) and r['mode']!='none')
@@ -276,7 +295,7 @@ def video_filter(p,ass_name='subtitles.ass',assets=None):
             filters.append(f"{source}drawbox=x={x}:y={y}:w={w}:h={h}:color={color}@{r.get('opacity',1)}:t=fill:enable='{enable}'{out}")
         source=out
     effects=effect_settings(p.video_effects)
-    if effects['enabled'] or p.sidebar.get('enabled'):
+    if effects['enabled'] or p.sidebar.get('enabled') or not finish:
         if effects['enabled'] and effects['flip']:
             filters.append(source+'hflip[flipped]');source='[flipped]'
         filters.append(source+"subtitles=filename='regions.ass'[annotated]")
@@ -285,7 +304,7 @@ def video_filter(p,ass_name='subtitles.ass',assets=None):
         filters.append(picture_filter(p,source));source='[picture]'
     artwork,source=artwork_filter(source,assets or [])
     filters.extend(artwork)
-    filters.append(source+f"subtitles=filename='{ass_name}',setpts=(PTS-STARTPTS)/{p.speed:.9f},pad=ceil(iw/2)*2:ceil(ih/2)*2[v]")
+    filters.append(source+(f"subtitles=filename='{ass_name}',setpts=(PTS-STARTPTS)/{p.speed:.9f}," if finish else "")+"pad=ceil(iw/2)*2:ceil(ih/2)*2[v]")
     return ';'.join(filters)
 
 
@@ -294,7 +313,7 @@ def raw_key(c,p):
     return hashlib.sha256(json.dumps(value,ensure_ascii=False).encode()).hexdigest()[:24]
 
 def signature(p):
-    return hashlib.sha256(json.dumps([p.duration,p.work_speed,p.max_fit,[[c.id,c.start,c.end,raw_key(c,p)] for c in p.cues]],sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(['timing-v3',p.slow_video_for_voice,p.duration,p.work_speed,p.max_fit,[[c.id,c.start,c.end,raw_key(c,p)] for c in p.cues]],sort_keys=True).encode()).hexdigest()
 
 def load_manifest(cache):
     try: return json.loads((Path(cache)/'voices.json').read_text(encoding='utf-8'))
@@ -386,13 +405,13 @@ def prepare_voice_row(c,p,cache,cancel,known_duration=None):
     cache=Path(cache);key=raw_key(c,p);raw=cache/(key+'.mp3')
     if not raw.is_file():return None
     dur=known_duration if known_duration is not None else probe(raw)['duration'];slot=(c.end-c.start)/p.work_speed
-    required=max(1,dur/slot);applied=min(required,p.max_fit)
+    required=max(1,dur/slot);applied=1. if p.slow_video_for_voice else min(required,p.max_fit)
     # Overlong speech remains audible in review, including its spill past the subtitle.
-    length=max(slot,dur/applied);ok=required<=p.max_fit+.0001
+    length=max(slot,dur/applied);ok=p.slow_video_for_voice or required<=p.max_fit+.0001
     fitkey=hashlib.sha256(f'partial-v2|{key}|{length:.9f}|{applied:.9f}'.encode()).hexdigest()[:24]
     fitted=cache/(fitkey+'.wav')
     oldfit=cache/(hashlib.sha256(f'{key}|{slot:.9f}'.encode()).hexdigest()[:24]+'.wav')
-    if ok and oldfit.is_file() and oldfit.stat().st_mtime_ns>=raw.stat().st_mtime_ns:fitted=oldfit
+    if not p.slow_video_for_voice and ok and oldfit.is_file() and oldfit.stat().st_mtime_ns>=raw.stat().st_mtime_ns:fitted=oldfit
     if fitted.is_file() and fitted.stat().st_mtime_ns<raw.stat().st_mtime_ns:
         fitted=cache/(hashlib.sha256((fitkey+str(raw.stat().st_mtime_ns)).encode()).hexdigest()[:24]+'.wav')
     if not fitted.is_file():
@@ -433,8 +452,15 @@ def rebuild_voice_track(p,cache,cancel,report,segment=None,include_overlap=False
     atomic_json(metadata_path,metadata)
     if not rows and segment is None:raise ValueError('Chưa có MP3 phù hợp với nội dung/giọng hiện tại. Chọn vùng rồi tạo voice trước.')
     start,end=segment if segment is not None else (0,p.duration)
-    offset=start/p.work_speed
-    total=max(end/p.work_speed,max((r['end'] for r in rows),default=0))-offset
+    timing=voice_timing(p,rows) if p.slow_video_for_voice else None
+    if timing:
+        for row in rows:
+            row.update(timing['rows'][row['id']])
+        offset=map_time(timing,start)
+        total=map_time(timing,end)-offset
+    else:
+        offset=start/p.work_speed
+        total=max(end/p.work_speed,max((r['end'] for r in rows),default=0))-offset
     sig=batch_signature(p,segment) if segment is not None else signature(p)
     if include_overlap:sig=hashlib.sha256((sig+'review'+signature(p)).encode()).hexdigest()
     track=cache/(('batch-voice-' if segment is not None else 'voice-')+sig[:20]+'.wav')
@@ -445,7 +471,7 @@ def rebuild_voice_track(p,cache,cancel,report,segment=None,include_overlap=False
     bad=sum(not r['ok'] for r in rows)
     manifest=dict(signature=sig,schema=2,track=str(track),rows=rows,missing=missing,errors=errors,
         complete=not missing and not bad,created=time.time(),duration=total,segment=segment,
-        long_count=bad,missing_count=len(missing),tail=max(0,total-(end-start)/p.work_speed))
+        long_count=bad,missing_count=len(missing),tail=max(0,total-(end-start)/p.work_speed),timing=timing)
     if not include_overlap:atomic_json(batch_manifest_path(cache,segment) if segment is not None else cache/'voices.json',manifest)
     report(100,f'Nghe được {len(rows)}/{len(spoken)} câu · {bad} câu tràn mốc · {len(missing)} câu chưa có voice')
     return manifest
@@ -647,6 +673,11 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
     out=Path(out)
     if Path(p.video).resolve()==out.resolve(): raise ValueError('Không được ghi đè video nguồn.')
     if out.exists(): raise ValueError('Tên tệp đã tồn tại. Hãy chọn tên mới để giữ bản cũ.')
+    if with_voice and p.slow_video_for_voice:
+        manifest=local_voice or load_manifest(cache)
+        if manifest.get('timing'):
+            from .render import export_retimed_video
+            return export_retimed_video(p,cache,out,cancel,report,manifest,preview,segment)
     cache=Path(cache);cache.mkdir(parents=True,exist_ok=True)
     job=cache/('render-'+uuid.uuid4().hex[:10]);job.mkdir()
     effects=effect_settings(p.video_effects)
@@ -680,7 +711,7 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
     if clean:
         if preview is not None:args+=['-ss',f'{source_start:.6f}']
         source_audio=f'{2 if with_voice else 1}:a';args+=['-i',str(clean)]
-    if p.has_audio and p.original_gain>0:
+    if p.has_audio and p.original_gain>0 and not (with_voice and p.mute_original_when_dubbed):
         graph+=f';[{source_audio}]asetpts=PTS-STARTPTS,{atempo(p.speed)},volume={p.original_gain},apad,atrim=duration={duration:.6f}[original]';audios.append('[original]')
     if with_voice:
         graph+=f';[1:a]asetpts=PTS-STARTPTS,{atempo(p.final_speed)},{voice_volume_filter(p.voice_volume)},apad,atrim=duration={duration:.6f}[voice]';audios.append('[voice]')
@@ -818,7 +849,7 @@ def voice_batches(p, minutes=None):
 
 def batch_signature(p,segment):
     a,b=segment
-    content=[p.video,a,b,p.work_speed,p.max_fit,[[c.id,c.start,c.end,raw_key(c,p)] for c in p.cues if a<=c.start<b and plain(c.text)]]
+    content=['timing-v3',p.slow_video_for_voice,p.video,a,b,p.work_speed,p.max_fit,[[c.id,c.start,c.end,raw_key(c,p)] for c in p.cues if a<=c.start<b and plain(c.text)]]
     return hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
 
 def batch_manifest_path(cache,segment):
@@ -1303,3 +1334,4 @@ def make_music_preview(p,result,base,cancel,report):
             tmp.replace(target)
         finally:tmp.unlink(missing_ok=True)
     return dict(result,preview=str(target),preview_codec=probe(target)['video_codec'],enabled=True)
+
