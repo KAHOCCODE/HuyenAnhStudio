@@ -68,14 +68,14 @@ class QueueTests(unittest.TestCase):
         gate=TTSCooldown(6,spacing=0);cancel=threading.Event();gate.limit=6
         with patch('studio.tts.time.monotonic',return_value=100):
             tokens=[gate.acquire(cancel) for _ in range(6)]
-            gate.no_audio(tokens[0]);self.assertEqual(gate.limit,6)
-            gate.no_audio(tokens[1]);self.assertEqual(gate.limit,3);self.assertEqual(gate.spacing,.6)
+            self.assertIsNone(gate.no_audio(tokens[0]));self.assertEqual(gate.limit,1)
+            self.assertEqual(gate.no_audio(tokens[1]),10);self.assertEqual(gate.until,110)
             for token in tokens[2:]:gate.success(token)
-            self.assertEqual(gate.limit,3);self.assertEqual(gate.active,0)
-        with patch('studio.tts.time.monotonic',return_value=101):
-            token=gate.acquire(cancel);gate.success(token);self.assertEqual(gate.limit,3)
-        with patch('studio.tts.time.monotonic',return_value=102):
-            token=gate.acquire(cancel);gate.success(token);self.assertEqual(gate.limit,4)
+            self.assertEqual(gate.limit,1);self.assertEqual(gate.active,0);self.assertEqual(gate.recovery_round,1)
+        for i in range(4):
+            with patch('studio.tts.time.monotonic',return_value=111+i):
+                token=gate.acquire(cancel);gate.success(token);self.assertEqual(gate.limit,2 if i==3 else 1)
+        self.assertEqual(gate.recovery_round,0)
 
     def test_tls_verification_failure_stops_without_retries(self):
         context.gate=TTSCooldown()

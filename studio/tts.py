@@ -9,7 +9,8 @@ import unicodedata
 
 MAX_AUDIO_ATTEMPTS=5
 MAX_EMPTY_CUES=5
-MAX_EMPTY_RESPONSES=8
+RECOVERY_DELAYS=(10,20,40)
+HEALTHY_BEFORE_RAMP=4
 
 
 class TTSServiceError(RuntimeError):
@@ -38,12 +39,13 @@ def edge_client():
 
 
 class TTSCooldown:
-    def __init__(self,capacity=1,spacing=.2):
+    def __init__(self,capacity=1,spacing=.6):
         self.lock=threading.Lock();self.capacity=max(1,min(6,capacity));self.limit=1
         self.active=0;self.generation=0;self.failures=0;self.until=0.;self.next_start=0.
         self.spacing=spacing;self.error=None
         self.empty_cues=0
         self.empty_responses=0;self.healthy=0;self.base_spacing=spacing
+        self.recovery_round=0;self.recovering=False
 
     def check(self,cancel):
         if cancel.is_set():raise InterruptedError('Đã hủy tạo giọng; MP3 đã có được giữ lại.')
@@ -67,24 +69,31 @@ class TTSCooldown:
     def success(self,generation):
         with self.lock:
             self.active-=1
-            self.empty_cues=0
-            self.empty_responses=0
             if generation==self.generation:
+                self.empty_cues=0;self.empty_responses=0
+                self.recovery_round=0;self.recovering=False
                 self.failures=0;self.healthy+=1
-                # Ramp back gradually after an empty-response wave, not all at once.
-                if self.spacing==self.base_spacing or self.healthy>=2:
+                # Four fresh successes, not one response from an older failed wave.
+                if self.healthy>=HEALTHY_BEFORE_RAMP:
                     self.limit=min(self.capacity,self.limit+1);self.healthy=0
                     if self.limit==self.capacity:self.spacing=self.base_spacing
 
     def no_audio(self,generation):
         with self.lock:
-            self.active-=1;self.empty_responses+=1;self.healthy=0
-            if self.empty_responses>=MAX_EMPTY_RESPONSES:
-                self.error=f'Tạm dừng: {MAX_EMPTY_RESPONSES} phản hồi NoAudioReceived liên tiếp, chưa có âm thanh mới thành công. Dịch vụ hoặc kết nối đang lỗi; MP3 đã có được giữ nguyên. Kiểm tra kết nối giọng trước khi chạy tiếp.'
+            self.active-=1
+            if self.error:raise TTSServiceError(self.error)
+            # Drain errors already in flight; they belong to the same recovery wave.
+            if generation!=self.generation:return None
+            self.empty_responses+=1;self.healthy=0;self.limit=1
+            self.spacing=max(self.base_spacing,.8)
+            if not self.recovering and self.empty_responses<2:return None
+            self.recovery_round+=1;self.recovering=True;self.generation+=1
+            if self.recovery_round>len(RECOVERY_DELAYS):
+                self.error=f'Tạm dừng: Edge TTS vẫn không có âm thanh sau {len(RECOVERY_DELAYS)} đợt nghỉ và thử phục hồi bằng 1 câu (10, 20, 40 giây). MP3 đã có được giữ nguyên; kiểm tra kết nối giọng trước khi chạy tiếp.'
                 raise TTSServiceError(self.error)
-            if self.empty_responses>=2 and generation==self.generation:
-                self.limit=max(1,self.limit//2);self.generation+=1
-                self.spacing=max(self.base_spacing,.6)
+            delay=RECOVERY_DELAYS[self.recovery_round-1]
+            self.until=max(self.until,time.monotonic()+delay)
+            return delay
 
     def empty_cue_failed(self):
         with self.lock:
@@ -104,7 +113,7 @@ class TTSCooldown:
             if generation!=self.generation:
                 if retry_after:self.until=max(self.until,time.monotonic()+retry_after)
                 return None
-            self.generation+=1;self.limit=1;self.failures+=1
+            self.generation+=1;self.limit=1;self.failures+=1;self.healthy=0
             if self.failures>=3:
                 self.error=f'Dừng tạo voice sau 3 lần liên tiếp dịch vụ không phục hồi: {reason} Kiểm tra mạng/dịch vụ rồi chạy lại; MP3 đã có được giữ nguyên.'
                 raise TTSServiceError(self.error)
@@ -193,12 +202,16 @@ async def fetch_voice(text,voice,rate,path,cancel):
         except (InterruptedError,TTSServiceError,asyncio.CancelledError):
             gate.release();raise
         except NoAudioReceived:
-            if deferred:gate.no_audio(generation)
+            shared_delay=None
+            if deferred:shared_delay=gate.no_audio(generation)
             else:gate.release()
+            if shared_delay is not None:
+                report=getattr(context,'report',None)
+                if report:report(f'NoAudioReceived dồn dập · nghỉ chung {shared_delay:g}s, sau đó chỉ 1 câu thử phục hồi ({gate.recovery_round}/{len(RECOVERY_DELAYS)}).')
             if attempt+1==MAX_AUDIO_ATTEMPTS:
                 gate.empty_cue_failed()
                 raise TTSRequestError(f'Câu vẫn không có âm thanh (NoAudioReceived) sau {MAX_AUDIO_ATTEMPTS} lần thử. Các câu khác tiếp tục; có thể thử lại câu thiếu.')
-            delay=retry_delay(attempt)
+            delay=max(retry_delay(attempt),shared_delay or 0)
             if deferred:raise TTSDeferredRetry(attempt+1,delay)
             report=getattr(context,'report',None)
             if report:report(f'NoAudioReceived · thử lại riêng câu này sau {delay:.1f}s ({attempt+2}/{MAX_AUDIO_ATTEMPTS}); các câu khác tiếp tục.')

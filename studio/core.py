@@ -48,7 +48,7 @@ class Project:
     final_speed: float = 1.0
     voice: str = 'vi-VN-NamMinhNeural'
     tts_rate: int = 0
-    tts_workers: int = 3
+    tts_workers: int = 2
     voice_batch_minutes: int = 10
     voice_batch_index: int = 0
     batch_reviewed: dict = field(default_factory=dict)
@@ -528,7 +528,7 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
         order={id:i for i,id in enumerate(only_ids)};spoken.sort(key=lambda c:order[c.id])
     if not spoken:raise ValueError('Vùng chọn không có câu cần đọc.')
     from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
-    capacity=max(1,min(6,p.tts_workers));gate=TTSCooldown(capacity)
+    capacity=max(1,min(2,p.tts_workers));gate=TTSCooldown(capacity)
     errors=[];unique={raw_key(c,p):c for c in spoken};pending=[];done=0;total=len(unique);began=time.monotonic()
     cue_numbers={c.id:i+1 for i,c in enumerate(p.cues)}
     key_cues={key:[] for key in unique}
