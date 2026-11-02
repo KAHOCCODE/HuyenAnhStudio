@@ -7,7 +7,7 @@ from typing import Callable
 from .retiming import voice_timing, map_time, source_rate
 from .video_effects import settings as effect_settings, output_size, picture_filter
 from .composition import validate_composition, prepare_layers, artwork_filter, sidebar_settings, subtitle_area
-from .tts import TTSCooldown, TTSServiceError, fetch_voice, context as _tts_context, edge_client
+from .tts import TTSCooldown, TTSServiceError, TTSDeferredRetry, fetch_voice, context as _tts_context, edge_client
 
 RATE = 24000
 ROOT = Path(__file__).resolve().parent.parent
@@ -542,53 +542,77 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
     version=edge_client().__version__ if pending else 'không cần kết nối'
     report(65*done/max(1,total),f'Edge TTS {version} · Dùng lại {done}/{total} MP3 · Thử 1 câu trước, tối đa {capacity} câu cho toàn bộ lượt')
     def fetch_one(pair):
-        key,c=pair;raw=cache/(key+'.mp3');temp=raw.with_suffix('.partial.mp3')
+        key,c,attempts=pair;raw=cache/(key+'.mp3');temp=raw.with_suffix('.partial.mp3')
         try:
             if cancel.is_set():raise InterruptedError('Đã hủy tạo giọng.')
             _tts_context.gate=gate;_tts_context.report=lambda msg:report(65*done/max(1,total),f'Câu {cue_numbers[c.id]} ({stamp(c.start)}) · '+msg)
+            _tts_context.defer_retry=True;_tts_context.audio_attempts=attempts
             asyncio.run(fetch_voice(plain(c.text),c.voice or p.voice,p.tts_rate+c.tts_rate,temp,cancel))
-            probe(temp);temp.replace(raw)
-            return c.id,None
+            duration=probe(temp)['duration'];temp.replace(raw)
+            return c.id,None,dict(duration=duration)
+        except TTSDeferredRetry as e:return c.id,str(e),dict(retry=e)
         except (InterruptedError,TTSServiceError):raise
-        except Exception as e:return c.id,str(e)
+        except Exception as e:return c.id,str(e),{}
         finally:
             temp.unlink(missing_ok=True)
             _tts_context.__dict__.clear()
     # Shared collector: workers never mutate manifests. Refill each freed slot immediately.
     from collections import deque
+    import heapq
     segments=parallel_segments or [(float('-inf'),float('inf'))]
     queues=[deque() for _ in segments];active=[0]*len(segments)
     for pair in pending:
         group=next((i for i,(a,b) in enumerate(segments) if a<=pair[1].start<b),0)
         queues[group].append(pair)
-    limit=capacity;cursor=0
-    with ThreadPoolExecutor(max_workers=capacity) as pool:
-        futures={}
-        while any(queues) or futures:
-            if cancel.is_set():
-                for f in futures:f.cancel()
-                raise InterruptedError('Đã hủy; voice đã tạo được giữ.')
-            while len(futures)<capacity:
-                group=next(((cursor+j)%len(queues) for j in range(len(queues)) if queues[(cursor+j)%len(queues)] and active[(cursor+j)%len(queues)]<limit),None)
-                if group is None:break
-                pair=queues[group].popleft()
-                futures[pool.submit(fetch_one,pair)]=(group,pair[0]);active[group]+=1;cursor=(group+1)%len(queues)
-            finished,_=wait(futures,timeout=.2,return_when=FIRST_COMPLETED)
-            for future in finished:
-                group,key=futures.pop(future);active[group]-=1
-                id,error=future.result();done+=1
-                error_changed=False
-                for c in key_cues[key]:
-                    if error:
-                        stored_errors[c.id]=dict(key=key,error=error);error_changed=True
-                    elif c.id in stored_errors:
-                        del stored_errors[c.id];error_changed=True
-                if error_changed:atomic_json(error_path,stored_errors)
-                if error:
-                    if only_id:raise RuntimeError(error)
-                    errors.extend(dict(id=c.id,error=error) for c in key_cues[key])
-                elapsed=round(time.monotonic()-began)
-                report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(errors)} lỗi'+(f' · Câu {cue_numbers[id]} ({stamp(unique[key].start)}) · '+error if error else ''))
+    limit=capacity;cursor=0;retries=[];serial=0
+    metadata_path=cache/'audio-metadata.json'
+    try:metadata=json.loads(metadata_path.read_text(encoding='utf-8'))
+    except (OSError,ValueError):metadata={}
+    try:
+        with ThreadPoolExecutor(max_workers=capacity) as pool:
+            futures={}
+            while any(queues) or retries or futures:
+                if cancel.is_set():
+                    for f in futures:f.cancel()
+                    raise InterruptedError('Đã hủy; voice đã tạo được giữ.')
+                while len(futures)<capacity:
+                    group=next(((cursor+j)%len(queues) for j in range(len(queues)) if queues[(cursor+j)%len(queues)] and active[(cursor+j)%len(queues)]<limit),None)
+                    if group is not None:
+                        key,c=queues[group].popleft();pair=(key,c,0);cursor=(group+1)%len(queues)
+                    elif retries and retries[0][0]<=time.monotonic():
+                        _,_,group,pair=heapq.heappop(retries)
+                    else:break
+                    futures[pool.submit(fetch_one,pair)]=(group,pair[0]);active[group]+=1
+                if not futures:
+                    if retries:cancel.wait(min(.2,max(0,retries[0][0]-time.monotonic())))
+                    continue
+                finished,_=wait(futures,timeout=.2,return_when=FIRST_COMPLETED)
+                for future in finished:
+                    group,key=futures.pop(future);active[group]-=1
+                    try:id,error,details=future.result()
+                    except TTSServiceError as e:
+                        for c in key_cues[key]:stored_errors[c.id]=dict(key=key,error=str(e))
+                        atomic_json(error_path,stored_errors);raise
+                    retry=details.get('retry')
+                    if retry:
+                        serial+=1;heapq.heappush(retries,(time.monotonic()+retry.delay,serial,group,(key,unique[key],retry.attempts)))
+                    else:done+=1
+                    error_changed=False
+                    for c in key_cues[key]:
+                        if error:
+                            stored_errors[c.id]=dict(key=key,error=error);error_changed=True
+                        elif c.id in stored_errors:
+                            del stored_errors[c.id];error_changed=True
+                    if error_changed:atomic_json(error_path,stored_errors)
+                    if details.get('duration'):
+                        raw=cache/(key+'.mp3');stat=raw.stat()
+                        metadata[raw.name]=dict(size=stat.st_size,mtime=stat.st_mtime_ns,duration=details['duration'])
+                    if error and not retry:
+                        if only_id:raise RuntimeError(error)
+                        errors.extend(dict(id=c.id,error=error) for c in key_cues[key])
+                    elapsed=round(time.monotonic()-began)
+                    report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(retries)} câu chờ thử lại · tối đa {gate.limit} kết nối · {len(errors)} lỗi'+(f' · Câu {cue_numbers[id]} ({stamp(unique[key].start)}) · '+error if error else ''))
+    finally:atomic_json(metadata_path,metadata)
     if only_id:
         row=prepare_voice_row(spoken[0],p,cache,cancel)
         if row:

@@ -5,9 +5,11 @@ import random
 import re
 import threading
 import time
+import unicodedata
 
-MAX_AUDIO_ATTEMPTS=9
+MAX_AUDIO_ATTEMPTS=5
 MAX_EMPTY_CUES=5
+MAX_EMPTY_RESPONSES=8
 
 
 class TTSServiceError(RuntimeError):
@@ -16,6 +18,13 @@ class TTSServiceError(RuntimeError):
 
 class TTSRequestError(RuntimeError):
     """A cue remains missing; other cues can still be synthesized."""
+
+
+class TTSDeferredRetry(TTSRequestError):
+    """Return the worker to the queue instead of sleeping in it."""
+    def __init__(self,attempts,delay):
+        super().__init__(f'NoAudioReceived · chưa có âm thanh sau {attempts}/{MAX_AUDIO_ATTEMPTS} lần; đã xếp lại câu ở cuối hàng đợi.')
+        self.attempts=attempts;self.delay=delay
 
 
 def edge_client():
@@ -34,6 +43,7 @@ class TTSCooldown:
         self.active=0;self.generation=0;self.failures=0;self.until=0.;self.next_start=0.
         self.spacing=spacing;self.error=None
         self.empty_cues=0
+        self.empty_responses=0;self.healthy=0;self.base_spacing=spacing
 
     def check(self,cancel):
         if cancel.is_set():raise InterruptedError('Đã hủy tạo giọng; MP3 đã có được giữ lại.')
@@ -58,8 +68,23 @@ class TTSCooldown:
         with self.lock:
             self.active-=1
             self.empty_cues=0
+            self.empty_responses=0
             if generation==self.generation:
-                self.failures=0;self.limit=min(self.capacity,self.limit+1)
+                self.failures=0;self.healthy+=1
+                # Ramp back gradually after an empty-response wave, not all at once.
+                if self.spacing==self.base_spacing or self.healthy>=2:
+                    self.limit=min(self.capacity,self.limit+1);self.healthy=0
+                    if self.limit==self.capacity:self.spacing=self.base_spacing
+
+    def no_audio(self,generation):
+        with self.lock:
+            self.active-=1;self.empty_responses+=1;self.healthy=0
+            if self.empty_responses>=MAX_EMPTY_RESPONSES:
+                self.error=f'Tạm dừng: {MAX_EMPTY_RESPONSES} phản hồi NoAudioReceived liên tiếp, chưa có âm thanh mới thành công. Dịch vụ hoặc kết nối đang lỗi; MP3 đã có được giữ nguyên. Kiểm tra kết nối giọng trước khi chạy tiếp.'
+                raise TTSServiceError(self.error)
+            if self.empty_responses>=2 and generation==self.generation:
+                self.limit=max(1,self.limit//2);self.generation+=1
+                self.spacing=max(self.base_spacing,.6)
 
     def empty_cue_failed(self):
         with self.lock:
@@ -93,6 +118,8 @@ def failure_reason(error):
     import aiohttp
     from edge_tts.exceptions import EdgeTTSException,NoAudioReceived
     status=getattr(error,'status',None)
+    if isinstance(error,(aiohttp.ClientConnectorCertificateError,aiohttp.ClientConnectorSSLError)):
+        return 'Không xác minh được chứng chỉ HTTPS của Edge TTS. Kiểm tra ngày giờ Windows, chứng chỉ hệ thống hoặc phần mềm lọc HTTPS; ứng dụng không tắt kiểm tra chứng chỉ.',True,0
     if status:
         reason=f'Edge TTS trả HTTP {status}.'
         if status in (401,403):
@@ -116,6 +143,10 @@ def failure_reason(error):
 context=threading.local()
 
 
+def retry_delay(attempt):
+    return min(6,.75*2**attempt)+.5*random.random()
+
+
 async def wait_retry(delay,cancel,gate):
     end=time.monotonic()+delay
     while True:
@@ -127,13 +158,13 @@ async def wait_retry(delay,cancel,gate):
 
 async def save_attempt(client,text,voice,rate,path,cancel,gate):
     from edge_tts.exceptions import NoAudioReceived
-    task=asyncio.create_task(client.Communicate(text,voice,rate=f'{rate:+d}%').save(str(path)))
+    task=asyncio.create_task(client.Communicate(text,voice,rate=f'{rate:+d}%',connect_timeout=10,receive_timeout=30).save(str(path)))
     complete=False
     try:
         began=time.monotonic()
         while not task.done():
             gate.check(cancel)
-            if time.monotonic()-began>90:raise TimeoutError()
+            if time.monotonic()-began>max(45,min(600,15+len(text)/6)):raise TimeoutError()
             await asyncio.sleep(.05)
         await task
         gate.check(cancel)
@@ -150,23 +181,25 @@ async def fetch_voice(text,voice,rate,path,cancel):
     from edge_tts.exceptions import NoAudioReceived
     client=edge_client();gate=getattr(context,'gate',None) or TTSCooldown()
     # Clean only characters the speech protocol cannot read; keep the SRT unchanged.
-    text=' '.join(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]','',text).split())
+    text=' '.join(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufeff\u200b\u2060]',' ',unicodedata.normalize('NFC',text)).split())
     if not any(c.isalnum() for c in text):raise TTSRequestError('Câu không có chữ hoặc số để đọc; giữ nguyên phụ đề để rà soát.')
     path=Path(path);service_failures=0
     reason='Không nhận được âm thanh.'
-    for attempt in range(MAX_AUDIO_ATTEMPTS):
+    deferred=getattr(context,'defer_retry',False)
+    for attempt in range(getattr(context,'audio_attempts',0),MAX_AUDIO_ATTEMPTS):
         generation=gate.acquire(cancel)
         try:
             await save_attempt(client,text,voice,rate,path,cancel,gate)
         except (InterruptedError,TTSServiceError,asyncio.CancelledError):
             gate.release();raise
         except NoAudioReceived:
-            # An empty response for one cue is not evidence that every cue failed.
-            gate.release()
+            if deferred:gate.no_audio(generation)
+            else:gate.release()
             if attempt+1==MAX_AUDIO_ATTEMPTS:
                 gate.empty_cue_failed()
                 raise TTSRequestError(f'Câu vẫn không có âm thanh (NoAudioReceived) sau {MAX_AUDIO_ATTEMPTS} lần thử. Các câu khác tiếp tục; có thể thử lại câu thiếu.')
-            delay=1.5*(attempt+1)+random.random()
+            delay=retry_delay(attempt)
+            if deferred:raise TTSDeferredRetry(attempt+1,delay)
             report=getattr(context,'report',None)
             if report:report(f'NoAudioReceived · thử lại riêng câu này sau {delay:.1f}s ({attempt+2}/{MAX_AUDIO_ATTEMPTS}); các câu khác tiếp tục.')
             await wait_retry(delay,cancel,gate)
@@ -183,3 +216,24 @@ async def fetch_voice(text,voice,rate,path,cancel):
                 report(f'{reason} Chờ chung {delay:g}s, sau đó thử phục hồi dịch vụ bằng 1 câu ({service_failures+1}/3).')
         else:
             gate.success(generation);return
+
+
+def check_voice_service(cancel,report):
+    """Two independent, bounded requests; no user text, no saved audio, no retries."""
+    import tempfile
+    client=edge_client();results=[]
+    with tempfile.TemporaryDirectory(prefix='huyenanh-tts-check-') as folder:
+        for voice in ('vi-VN-NamMinhNeural','vi-VN-HoaiMyNeural'):
+            if cancel.is_set():raise InterruptedError('Đã hủy kiểm tra kết nối giọng.')
+            report(len(results)*50,'Đang kiểm tra '+voice)
+            path=Path(folder)/'sample.mp3';gate=TTSCooldown();started=time.monotonic()
+            try:
+                asyncio.run(save_attempt(client,'Xin chào. Đây là câu kiểm tra kết nối giọng đọc tiếng Việt.',voice,0,path,cancel,gate))
+                results.append(dict(voice=voice,ok=True,seconds=round(time.monotonic()-started,2),bytes=path.stat().st_size))
+            except (InterruptedError,asyncio.CancelledError):raise
+            except Exception as error:
+                reason,_,_=failure_reason(error)
+                results.append(dict(voice=voice,ok=False,seconds=round(time.monotonic()-started,2),error=reason))
+            finally:path.unlink(missing_ok=True)
+    report(100,'Đã kiểm tra hai giọng Edge TTS.')
+    return dict(version=client.__version__,voices=results)

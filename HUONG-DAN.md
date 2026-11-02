@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3.5 — đồng bộ giọng bằng giãn video
+# HUYỄN ẢNH Studio 0.3.6 — hàng đợi giọng đọc và kiểm tra kết nối
 
 ## Cập nhật từ nhánh đang dùng
 
@@ -10,7 +10,16 @@ git pull --ff-only origin feat/video-frame-effects
 start.cmd
 ```
 
-Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.5. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
+Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.6 nếu đã có Edge TTS 7.3.1. Nếu app báo thư viện cũ, chạy install.cmd một lần. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
+
+## Mới: tạo giọng và xử lý NoAudioReceived
+
+- Vẫn dùng hai giọng Nam Minh và Hoài My. Bản này giữ `edge-tts==7.3.1`, là bản phát hành mới nhất đã đối chiếu ngày 02/11/2026; không chuyển sang API trả phí hoặc đổi giọng tự động.
+- Câu lỗi được xếp lại sau các câu chưa thử, không ngủ trong luồng xử lý. Tối đa 5 lượt/câu; tự giảm kết nối khi lỗi dồn dập và tạm dừng khi 8 phản hồi rỗng liên tiếp không có lần thành công xen giữa.
+- Thời lượng MP3 mới được ghi vào bộ nhớ đệm sau khi kiểm tra; bước chuẩn bị âm thanh dùng lại kết quả thay vì chạy FFprobe lần hai. Không cần xóa giọng đã tạo.
+- Vào **4 · Sub và giọng → Âm thanh / giọng đọc → Kiểm tra kết nối hai giọng**. App gửi đúng một câu mẫu ngắn cho mỗi giọng, báo có/không có âm thanh, thời gian chờ hoặc loại lỗi; không lưu file thử và không sửa dự án. Kết quả chỉ phản ánh thời điểm kiểm tra.
+- Mỗi yêu cầu dùng giới hạn kết nối 10 giây, chờ dữ liệu 30 giây; câu ngắn còn có giới hạn tổng 45 giây, câu dài được nới theo độ dài. Có thể hủy khi đang gửi hoặc đang chờ lượt thử lại.
+- Nếu vẫn lỗi, dùng **Rà thiếu / thử lại câu lỗi** để chạy lại phần thiếu. Xem nút kiểm tra kết nối trước khi chạy lại toàn bộ; nếu một giọng lỗi còn giọng kia hoạt động, bạn tự chọn giọng phù hợp. Không cam kết khắc phục hoàn toàn việc dịch vụ Edge trả rỗng.
 
 ## Mới: làm chậm hình thay vì ép nhanh câu đọc
 
@@ -76,8 +85,8 @@ Trong **Âm thanh / giọng đọc**, mục **Tốc độ video dựng ×** nằ
 
 - Giọng ngắn hơn khoảng câu được thêm im lặng; giọng dài hơn được tăng tốc trong giới hạn. Nếu vẫn quá dài, sửa câu, tăng khoảng câu hoặc đổi thiết lập rồi tạo/ghép lại.
 - MP3 có cùng văn bản, giọng và tốc độ được dùng lại khi chạy tiếp. Có tiến độ, thử lại khi lỗi và hủy tác vụ; không tự rút gọn văn bản.
-- Các lượt dùng chung giới hạn 1–6 câu đồng thời, không nhân theo số lượt. App bắt đầu bằng 1 câu thật rồi tăng dần đến mức đã chọn. **NoAudioReceived** được thử lại riêng từng câu tối đa 9 lần, chờ 1,5 giây × số lần lỗi cộng một khoảng ngẫu nhiên dưới 1 giây; các câu khác đang chạy vẫn tiếp tục. Câu hết lượt thử được ghi lỗi để rà/chạy lại, không tự đổi lời hoặc giọng. Nhật ký ghi số câu và mốc nguồn. Tệp lỗi được cập nhật sau mỗi câu đã xử lý, kể cả khi tác vụ sau đó bị hủy.
-- Khi bị giới hạn **429**, lỗi mạng hoặc lỗi dịch vụ, các câu cùng chờ 5 rồi 10 giây (hoặc thời gian dịch vụ yêu cầu), chỉ 1 câu thử phục hồi; lỗi cùng thời điểm không cộng dồn thời gian chờ. Sau 3 lần dịch vụ không phục hồi, app dừng cả hàng đợi. Nếu 5 câu liên tiếp đều không có âm thanh dù từng câu đã thử 9 lần, không có câu mới thành công xen giữa, app cũng tạm dừng để tránh tiếp tục lỗi trên hàng nghìn câu. MP3 thành công luôn được giữ để chạy tiếp.
+- Các lượt dùng chung giới hạn 1–6 câu đồng thời, không nhân theo số lượt. App thử 1 câu trước rồi tăng dần. Câu **NoAudioReceived** được trả về cuối hàng đợi, nhường chỗ cho các câu chưa thử; tối đa **5 lần tổng cộng** cho mỗi câu, không giữ luồng chỉ để chờ. Khi hết câu mới, các câu lỗi được thử lại theo thời điểm đã hẹn. Hai phản hồi rỗng liên tiếp làm giảm số kết nối; chỉ tăng lại dần khi có âm thanh thành công. Không tự đổi nội dung hoặc giọng đọc.
+- Khi bị giới hạn **429**, lỗi mạng hoặc lỗi dịch vụ, các câu cùng chờ 5 rồi 10 giây (hoặc thời gian dịch vụ yêu cầu), chỉ 1 câu thử phục hồi; lỗi cùng thời điểm không cộng dồn thời gian chờ. Sau 3 lần dịch vụ không phục hồi, app dừng hàng đợi. **8 phản hồi NoAudioReceived liên tiếp không có âm thanh mới thành công** cũng tạm dừng, thay vì thử đi thử lại hàng chục lần trên hàng nghìn câu. Lỗi chứng chỉ HTTPS dừng ngay để kiểm tra Windows/chứng chỉ/phần mềm lọc mạng; không tắt xác minh TLS. MP3 thành công và lỗi của các câu đã xử lý được giữ để chạy tiếp.
 - Âm video gốc giảm cả tiếng nói, nhạc và hiệu ứng. **Tắt âm thanh gốc** bỏ toàn bộ tiếng này khi xem/xuất và giữ mức âm lượng cũ để khôi phục khi bỏ chọn. **Giọng Việt (%)** trong **4 · Sub và giọng → Âm thanh / giọng đọc** chỉnh riêng từ **0 đến 600%**: 100% giữ mức giọng đã tạo, 200% khuếch đại 2 lần, 300% là 3 lần. Mức trên 100% có bộ giới hạn đỉnh để hạn chế vỡ tiếng; độ lớn cảm nhận còn phụ thuộc bản giọng và phần âm gốc đang trộn.
 - Mức giọng Việt được dùng khi nghe trên timeline, nghe từng câu, xem thử 10 giây, xuất toàn bộ video và lưu giọng WAV. Đổi âm lượng dùng lại MP3/giọng đã ghép, không cần gọi lại TTS. Lần đầu nghe mức trên 100%, app chuẩn bị một bản âm thanh tăng âm, giữ nguyên video và giọng gốc. Video dài cần chờ xử lý phần âm thanh này; cùng mức và cùng nguồn được dùng lại, giữ tối đa hai bản tăng âm cho mỗi nguồn khi có thể xóa tệp cũ. Giảm về 100% hoặc thấp hơn dùng trực tiếp giọng gốc. Khi đang nghe thử một câu, đổi mức sẽ dừng câu đó; bấm nghe câu lại để dùng mức mới. Bản xuất và WAV luôn áp dụng mức đang chọn trực tiếp.
 - **Giảm nền / chỉ giữ lời nói…** mở bộ tách AI: nền 0% dùng trực tiếp phần giọng đã tách; mức cao hơn trộn lại một phần nền. Có lọc nhẹ tiếng ù/nhiễu, có thể làm giọng mỏng đi. Hãy nghe lượt thử 30 giây trước khi áp dụng toàn video. Đổi mức nền hoặc lọc dùng lại các đoạn AI đã hoàn tất. Cần cài riêng bằng CAI-GIAM-NHAC.cmd, hoặc CAI-GPU-GTX.cmd cho DirectML. Không có cam kết tách sạch mọi tiếng động.

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBo
 from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QVideoSink,QMediaDevices
 
 from .core import *
+from .tts import check_voice_service
 from .effects_ui import EffectsDialog
 from .result_player import ResultPlayer
 from .layers_ui import LayersPanel
@@ -645,6 +646,7 @@ class Window(QMainWindow):
         vf.addRow(self.button('Giảm nền / chỉ giữ lời nói…',self.music_dialog))
         self.workers=self.spin(1,6,3,0,self.settings_changed);vf.addRow('Số câu tạo cùng lúc',self.workers)
         self.maxfit=self.spin(1,3,1.6,2,self.settings_changed);vf.addRow('Giới hạn ép câu ×',self.maxfit)
+        vf.addRow(self.button('Kiểm tra kết nối hai giọng',self.check_tts_connection))
         self.slow_video=QCheckBox('Câu dài: làm chậm video, giữ giọng');self.slow_video.toggled.connect(self.settings_changed);vf.addRow(self.slow_video)
         self.mute_dub=QCheckBox('Tắt âm gốc khi ghép giọng Việt');self.mute_dub.setToolTip('Tắt cả tiếng Trung, nhạc và hiệu ứng gốc khi nghe hoặc xuất kèm voice.');self.mute_dub.toggled.connect(self.settings_changed);vf.addRow(self.mute_dub)
         delete=self.button('Dọn giọng đọc đã tạo ▾',lambda:None);menu=QMenu(delete);menu.addAction('Xóa giọng các câu chọn…',self.delete_selected_voice);menu.addAction('Xóa toàn bộ giọng dự án…',self.delete_all_voice);delete.setMenu(menu);vf.addRow(delete)
@@ -760,7 +762,7 @@ class Window(QMainWindow):
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
         self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.5'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.6'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -1775,7 +1777,7 @@ class Window(QMainWindow):
             n=sum(table.item(i,0) is not None and table.item(i,0).checkState()==Qt.Checked for i in range(table.rowCount()));k=workers.value()
             if not parallel.isChecked():text=f'Tuần tự: tối đa {k} câu của lô 1, xong mới tới lô 2. Không có hai lô chạy cùng lúc.'
             else:text=f'Dùng chung: tối đa {k} câu cho tổng {n} lô. Xếp xen kẽ các lô, không nhân số kết nối theo số lượt.'
-            hint.setText(text+'\nNoAudioReceived: thử lại riêng câu lỗi tối đa 9 lần, các câu khác tiếp tục. Lỗi mạng/429 dùng thời gian chờ chung; lỗi 403 dừng ngay. MP3 đã có luôn được giữ.')
+            hint.setText(text+'\nCâu NoAudioReceived được xếp lại sau các câu chưa thử, tối đa 5 lần tổng cộng. Lỗi dồn dập tự giảm kết nối; 8 phản hồi rỗng liên tiếp sẽ tạm dừng. Lỗi 429 chờ chung, 403 dừng ngay. MP3 đã có được giữ.')
         parallel.toggled.connect(explain);workers.valueChanged.connect(explain);table.itemChanged.connect(explain);explain()
         stop=QCheckBox('Chế độ tuần tự: dừng sau lượt còn lỗi');stop.setChecked(True);stop.setEnabled(False);parallel.toggled.connect(lambda on:stop.setEnabled(not on));layout.addWidget(stop)
         def start():
@@ -1817,6 +1819,17 @@ class Window(QMainWindow):
         ids=list(self.timeline.selected_ids)
         if not ids:self.status.setText('Chọn câu trên timeline trước; Ctrl+bấm để chọn nhiều câu.');return
         self.generate(only_ids=ids)
+    def check_tts_connection(self):
+        if not self.guard():return
+        def done(result):
+            names={'vi-VN-NamMinhNeural':'Nam Minh','vi-VN-HoaiMyNeural':'Hoài My'}
+            lines=[f'Edge TTS {result["version"]}']
+            for row in result['voices']:
+                lines.append(names[row['voice']]+f' · {row["seconds"]:.1f} giây · '+('Có âm thanh' if row['ok'] else row['error']))
+            lines.append('Đây là kiểm tra tại thời điểm hiện tại; không bảo đảm dịch vụ luôn ổn định. Không đổi giọng hoặc xóa MP3 đã tạo.')
+            message='\n\n'.join(lines);self.log(message)
+            QMessageBox.information(self,'Kiểm tra giọng đọc',message)
+        self.start_job(lambda c,r:check_voice_service(c,r),done,'Kiểm tra hai giọng · mỗi giọng một yêu cầu')
 
     def generate(self,checked=False,only_ids=None,after=None):
         if not self.guard():return

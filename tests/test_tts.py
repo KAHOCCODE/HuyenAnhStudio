@@ -154,25 +154,25 @@ class TTSTests(unittest.TestCase):
             with patch.object(edge_tts,'Communicate',return_value=SimpleNamespace(save=save)),patch('studio.tts.wait_retry',side_effect=no_wait),patch('studio.tts.random.random',return_value=.25):
                 asyncio.run(fetch_voice('Xin chào','vi-VN-NamMinhNeural',0,target,threading.Event()))
             self.assertEqual(target.read_bytes(),b'complete audio');self.assertEqual(len(calls),5)
-        self.assertEqual(waits,[1.75,3.25,4.75,6.25]);self.assertEqual(len(reports),4)
-        self.assertIn('(5/9)',reports[-1]);self.assertFalse(any('Chờ chung' in s for s in reports))
+        self.assertEqual(waits,[.875,1.625,3.125,6.125]);self.assertEqual(len(reports),4)
+        self.assertIn('(5/5)',reports[-1]);self.assertFalse(any('Chờ chung' in s for s in reports))
 
-    def test_nine_empty_responses_fail_only_that_cue_and_skip_final_wait(self):
+    def test_five_empty_responses_fail_only_that_cue_and_skip_final_wait(self):
         from edge_tts.exceptions import NoAudioReceived
         gate=ImmediateCooldown();context.gate=gate;calls=[]
         async def save(path):calls.append(path);raise NoAudioReceived('No audio was received.')
         async def no_wait(*args):pass
         with tempfile.TemporaryDirectory() as folder:
             with patch.object(edge_tts,'Communicate',return_value=SimpleNamespace(save=save)),patch('studio.tts.wait_retry',side_effect=no_wait) as pause:
-                with self.assertRaisesRegex(TTSRequestError,'9 lần'):
+                with self.assertRaisesRegex(TTSRequestError,'5 lần'):
                     asyncio.run(fetch_voice('Xin chào','vi-VN-NamMinhNeural',0,Path(folder)/'partial.mp3',threading.Event()))
-            self.assertEqual(len(calls),9);self.assertEqual(pause.call_count,8)
+            self.assertEqual(len(calls),5);self.assertEqual(pause.call_count,4)
         self.assertEqual((gate.active,gate.failures,gate.until,gate.empty_cues),(0,0,0,1));self.assertIsNone(gate.error)
 
     def test_other_cue_can_finish_while_empty_cue_waits(self):
         from edge_tts.exceptions import NoAudioReceived
         gate=ImmediateCooldown(2);other_finished=threading.Event();lock=threading.Lock();calls={}
-        def client(text,voice,rate):
+        def client(text,voice,rate,**kwargs):
             async def save(path):
                 with lock:calls[text]=calls.get(text,0)+1;number=calls[text]
                 if text=='Câu lỗi' and number==1:raise NoAudioReceived('No audio was received.')
@@ -222,7 +222,7 @@ class TTSTests(unittest.TestCase):
 
     def test_cleanup_does_not_change_subtitle_or_drop_spoken_words(self):
         cue=Cue(0,1,'Xin\x00 chào\r\n  nhé!');before=cue.text;calls=[];context.gate=ImmediateCooldown()
-        def client(text,voice,rate):
+        def client(text,voice,rate,**kwargs):
             calls.append(text)
             async def save(path):Path(path).write_bytes(b'audio')
             return SimpleNamespace(save=save)
@@ -242,11 +242,11 @@ class TTSTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);cached=root/(raw_key(p.cues[0],p)+'.mp3');cached.write_bytes(b'existing audio')
             with patch.object(edge_tts,'Communicate',return_value=SimpleNamespace(save=save)),patch('studio.tts.wait_retry',side_effect=no_wait):
-                with self.assertRaisesRegex(TTSServiceError,'5 câu liên tiếp'):
+                with self.assertRaisesRegex(TTSServiceError,'8 phản hồi NoAudioReceived'):
                     generate_voices(p,root,threading.Event(),lambda *args:None,mix=False)
-            self.assertEqual(len(calls),45)
+            self.assertEqual(len(calls),8)
             stored=json.loads((root/'voice-errors.json').read_text(encoding='utf-8'))
-            self.assertEqual(set(stored),{c.id for c in p.cues[1:5]})
+            self.assertEqual(set(stored),{c.id for c in p.cues[1:9]})
             self.assertTrue(all('NoAudioReceived' in row['error'] for row in stored.values()))
             self.assertEqual(cached.read_bytes(),b'existing audio');self.assertFalse(list(root.glob('*.partial.mp3')))
 
@@ -260,7 +260,7 @@ class TTSTests(unittest.TestCase):
             subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','anullsrc=r=24000:cl=mono','-t','0.06','-c:a','libmp3lame','-b:a','24k','-write_xing','0',str(source)],check=True)
             audio=source.read_bytes();self.assertLess(len(audio),1024)
             cache=root/'cache'
-            def client(text,voice,rate):
+            def client(text,voice,rate,**kwargs):
                 async def save(path):
                     calls.append(text)
                     if text=='Câu lỗi':raise NoAudioReceived('No audio was received.')
@@ -269,9 +269,9 @@ class TTSTests(unittest.TestCase):
                     self.assertEqual(set(saved),{c.id for c in p.cues[:2]})
                     Path(path).write_bytes(audio)
                 return SimpleNamespace(save=save)
-            with patch.object(edge_tts,'Communicate',side_effect=client),patch('studio.tts.wait_retry',side_effect=no_wait):
+            with patch.object(edge_tts,'Communicate',side_effect=client),patch('studio.tts.retry_delay',return_value=0):
                 result=generate_voices(p,cache,threading.Event(),lambda *args:None,mix=False)
-            self.assertEqual(calls.count('Câu lỗi'),9);self.assertEqual(calls.count('Câu tốt'),1)
+            self.assertEqual(calls.count('Câu lỗi'),5);self.assertEqual(calls.count('Câu tốt'),1)
             self.assertEqual(result['missing_count'],2);self.assertEqual({r['id'] for r in result['tts_errors']},{c.id for c in p.cues[:2]})
             self.assertEqual([row['id'] for row in result['rows']],[p.cues[2].id])
             self.assertEqual((cache/(raw_key(p.cues[2],p)+'.mp3')).read_bytes(),audio)
