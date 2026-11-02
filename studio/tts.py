@@ -8,6 +8,7 @@ import time
 import unicodedata
 
 MAX_AUDIO_ATTEMPTS=5
+REFERENCE_AUDIO_ATTEMPTS=9
 MAX_EMPTY_CUES=5
 RECOVERY_DELAYS=(10,20,40)
 HEALTHY_BEFORE_RAMP=4
@@ -23,8 +24,8 @@ class TTSRequestError(RuntimeError):
 
 class TTSDeferredRetry(TTSRequestError):
     """Return the worker to the queue instead of sleeping in it."""
-    def __init__(self,attempts,delay):
-        super().__init__(f'NoAudioReceived · chưa có âm thanh sau {attempts}/{MAX_AUDIO_ATTEMPTS} lần; đã xếp lại câu ở cuối hàng đợi.')
+    def __init__(self,attempts,delay,total=MAX_AUDIO_ATTEMPTS):
+        super().__init__(f'NoAudioReceived · chưa có âm thanh sau {attempts}/{total} lần; thử lại sau {delay:.1f}s ở cuối hàng đợi.')
         self.attempts=attempts;self.delay=delay
 
 
@@ -39,13 +40,16 @@ def edge_client():
 
 
 class TTSCooldown:
-    def __init__(self,capacity=1,spacing=.6):
+    def __init__(self,capacity=1,spacing=.6,mode='adaptive'):
+        if mode not in ('adaptive','per_cue'):raise ValueError('Chế độ thử lại giọng không hợp lệ.')
+        self.mode=mode;self.max_attempts=REFERENCE_AUDIO_ATTEMPTS if mode=='per_cue' else MAX_AUDIO_ATTEMPTS
         self.lock=threading.Lock();self.capacity=max(1,min(6,capacity));self.limit=1
         self.active=0;self.generation=0;self.failures=0;self.until=0.;self.next_start=0.
         self.spacing=spacing;self.error=None
         self.empty_cues=0
         self.empty_responses=0;self.healthy=0;self.base_spacing=spacing
         self.recovery_round=0;self.recovering=False
+        self.http_recovering=False
 
     def check(self,cancel):
         if cancel.is_set():raise InterruptedError('Đã hủy tạo giọng; MP3 đã có được giữ lại.')
@@ -73,15 +77,19 @@ class TTSCooldown:
                 self.empty_cues=0;self.empty_responses=0
                 self.recovery_round=0;self.recovering=False
                 self.failures=0;self.healthy+=1
+                if self.mode=='per_cue' and not self.http_recovering:
+                    self.limit=self.capacity;self.spacing=self.base_spacing;self.healthy=0
+                    return
                 # Four fresh successes, not one response from an older failed wave.
                 if self.healthy>=HEALTHY_BEFORE_RAMP:
                     self.limit=min(self.capacity,self.limit+1);self.healthy=0
-                    if self.limit==self.capacity:self.spacing=self.base_spacing
+                    if self.limit==self.capacity:self.spacing=self.base_spacing;self.http_recovering=False
 
     def no_audio(self,generation):
         with self.lock:
             self.active-=1
             if self.error:raise TTSServiceError(self.error)
+            if self.mode=='per_cue':return None
             # Drain errors already in flight; they belong to the same recovery wave.
             if generation!=self.generation:return None
             self.empty_responses+=1;self.healthy=0;self.limit=1
@@ -98,6 +106,7 @@ class TTSCooldown:
     def empty_cue_failed(self):
         with self.lock:
             self.empty_cues+=1
+            if self.mode=='per_cue':return
             if self.empty_cues>=MAX_EMPTY_CUES:
                 self.error=f'Tạm dừng: {MAX_EMPTY_CUES} câu liên tiếp không có âm thanh dù mỗi câu đã thử {MAX_AUDIO_ATTEMPTS} lần, chưa có câu mới thành công xen giữa. Kiểm tra giọng đọc/mạng rồi chạy tiếp; MP3 đã có được giữ nguyên.'
                 raise TTSServiceError(self.error)
@@ -113,7 +122,7 @@ class TTSCooldown:
             if generation!=self.generation:
                 if retry_after:self.until=max(self.until,time.monotonic()+retry_after)
                 return None
-            self.generation+=1;self.limit=1;self.failures+=1;self.healthy=0
+            self.generation+=1;self.limit=1;self.failures+=1;self.healthy=0;self.http_recovering=True
             if self.failures>=3:
                 self.error=f'Dừng tạo voice sau 3 lần liên tiếp dịch vụ không phục hồi: {reason} Kiểm tra mạng/dịch vụ rồi chạy lại; MP3 đã có được giữ nguyên.'
                 raise TTSServiceError(self.error)
@@ -152,7 +161,8 @@ def failure_reason(error):
 context=threading.local()
 
 
-def retry_delay(attempt):
+def retry_delay(attempt,mode='adaptive'):
+    if mode=='per_cue':return 1.5*(attempt+1)+random.random()
     return min(6,.75*2**attempt)+.5*random.random()
 
 
@@ -195,7 +205,8 @@ async def fetch_voice(text,voice,rate,path,cancel):
     path=Path(path);service_failures=0
     reason='Không nhận được âm thanh.'
     deferred=getattr(context,'defer_retry',False)
-    for attempt in range(getattr(context,'audio_attempts',0),MAX_AUDIO_ATTEMPTS):
+    attempts=gate.max_attempts
+    for attempt in range(getattr(context,'audio_attempts',0),attempts):
         generation=gate.acquire(cancel)
         try:
             await save_attempt(client,text,voice,rate,path,cancel,gate)
@@ -208,13 +219,13 @@ async def fetch_voice(text,voice,rate,path,cancel):
             if shared_delay is not None:
                 report=getattr(context,'report',None)
                 if report:report(f'NoAudioReceived dồn dập · nghỉ chung {shared_delay:g}s, sau đó chỉ 1 câu thử phục hồi ({gate.recovery_round}/{len(RECOVERY_DELAYS)}).')
-            if attempt+1==MAX_AUDIO_ATTEMPTS:
+            if attempt+1==attempts:
                 gate.empty_cue_failed()
-                raise TTSRequestError(f'Câu vẫn không có âm thanh (NoAudioReceived) sau {MAX_AUDIO_ATTEMPTS} lần thử. Các câu khác tiếp tục; có thể thử lại câu thiếu.')
-            delay=max(retry_delay(attempt),shared_delay or 0)
-            if deferred:raise TTSDeferredRetry(attempt+1,delay)
+                raise TTSRequestError(f'Câu vẫn không có âm thanh (NoAudioReceived) sau {attempts} lần thử. Các câu khác tiếp tục; có thể thử lại câu thiếu.')
+            delay=max(retry_delay(attempt,gate.mode),shared_delay or 0)
+            if deferred:raise TTSDeferredRetry(attempt+1,delay,attempts)
             report=getattr(context,'report',None)
-            if report:report(f'NoAudioReceived · thử lại riêng câu này sau {delay:.1f}s ({attempt+2}/{MAX_AUDIO_ATTEMPTS}); các câu khác tiếp tục.')
+            if report:report(f'NoAudioReceived · thử lại riêng câu này sau {delay:.1f}s ({attempt+2}/{attempts}); các câu khác tiếp tục.')
             await wait_retry(delay,cancel,gate)
         except Exception as error:
             try:reason,fatal,retry_after=failure_reason(error)
@@ -222,7 +233,7 @@ async def fetch_voice(text,voice,rate,path,cancel):
                 gate.release();raise
             delay=gate.fail(generation,reason,fatal,retry_after)
             service_failures+=1
-            if service_failures>=3 or attempt+1==MAX_AUDIO_ATTEMPTS:
+            if service_failures>=3 or attempt+1==attempts:
                 raise TTSRequestError(f'Không tạo được câu: {reason}')
             report=getattr(context,'report',None)
             if report and delay is not None:

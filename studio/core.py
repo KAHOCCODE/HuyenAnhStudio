@@ -49,6 +49,7 @@ class Project:
     voice: str = 'vi-VN-NamMinhNeural'
     tts_rate: int = 0
     tts_workers: int = 2
+    tts_retry_mode: str = 'adaptive'
     voice_batch_minutes: int = 10
     voice_batch_index: int = 0
     batch_reviewed: dict = field(default_factory=dict)
@@ -85,6 +86,7 @@ class Project:
         p = cls(**data)
         if not (.25 <= p.work_speed <= 2 and .25 <= p.final_speed <= 4): raise ValueError('Tốc độ không hợp lệ.')
         if not 1<=p.tts_workers<=6:raise ValueError('Số luồng TTS phải trong khoảng 1–6.')
+        if p.tts_retry_mode not in ('adaptive','per_cue'):raise ValueError('Chế độ thử lại giọng không hợp lệ.')
         if not isinstance(p.voice_batch_minutes,int) or not 1<=p.voice_batch_minutes<=120:raise ValueError('Đợt voice phải dài từ 1 đến 120 phút.')
         if not isinstance(p.voice_batch_index,int) or p.voice_batch_index<0:raise ValueError('Số thứ tự đợt voice không hợp lệ.')
         if not isinstance(p.batch_reviewed,dict):raise ValueError('Trạng thái rà lô không hợp lệ.')
@@ -528,7 +530,8 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
         order={id:i for i,id in enumerate(only_ids)};spoken.sort(key=lambda c:order[c.id])
     if not spoken:raise ValueError('Vùng chọn không có câu cần đọc.')
     from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
-    capacity=max(1,min(2,p.tts_workers));gate=TTSCooldown(capacity)
+    capacity=max(1,min(6 if p.tts_retry_mode=='per_cue' else 2,p.tts_workers))
+    gate=TTSCooldown(capacity,spacing=.2,mode='per_cue') if p.tts_retry_mode=='per_cue' else TTSCooldown(capacity)
     errors=[];unique={raw_key(c,p):c for c in spoken};pending=[];done=0;total=len(unique);began=time.monotonic()
     cue_numbers={c.id:i+1 for i,c in enumerate(p.cues)}
     key_cues={key:[] for key in unique}
@@ -540,7 +543,8 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
         if (cache/(key+'.mp3')).is_file() and (cache/(key+'.mp3')).stat().st_size>0:done+=1
         else:pending.append((key,c))
     version=edge_client().__version__ if pending else 'không cần kết nối'
-    report(65*done/max(1,total),f'Edge TTS {version} · Dùng lại {done}/{total} MP3 · Thử 1 câu trước, tối đa {capacity} câu cho toàn bộ lượt')
+    policy='Thử lại từng câu · tối đa 9 lần/câu' if p.tts_retry_mode=='per_cue' else 'Tự giảm tải / nghỉ chung'
+    report(65*done/max(1,total),f'Edge TTS {version} · Dùng lại {done}/{total} MP3 · {policy} · thử 1 câu trước, tối đa {capacity} kết nối cho toàn bộ lượt')
     def fetch_one(pair):
         key,c,attempts=pair;raw=cache/(key+'.mp3');temp=raw.with_suffix('.partial.mp3')
         try:
