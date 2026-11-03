@@ -1,12 +1,62 @@
-# HUYỄN ẢNH Studio — bản 0.1.0
+# HUYỄN ẢNH Studio 0.3.8 — thêm chế độ thử lại từng câu
 
-Ứng dụng desktop dành cho Windows, tập trung vào ghép phụ đề tiếng Việt, che phụ đề có sẵn và lồng tiếng. Bố cục tham khảo cách làm việc của trình dựng video như CapCut: danh sách nguồn/phụ đề ở trái, video ở giữa, thiết lập ở phải, timeline ở dưới. Không phải phần mềm của CapCut.
+## Cập nhật từ nhánh đang dùng
 
-Ứng dụng dùng video và SRT bất kỳ bạn chọn. Không đi kèm, không chỉnh sửa và không phụ thuộc file SRT đã gửi để tham khảo.
+Đóng ứng dụng rồi chạy trong CMD như trước:
+
+```bat
+cd /d E:\HuyenAnhStudio
+git pull --ff-only origin feat/video-frame-effects
+start.cmd
+```
+
+Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.8 nếu đã có Edge TTS 7.3.1. Nếu app báo thư viện cũ, chạy install.cmd một lần. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
+
+## Bản 0.3.8: gửi song song và thử lại từng câu
+
+Trong **4 · Sub và giọng → Âm thanh / giọng đọc → Chế độ gửi**, chọn **Thử lại từng câu · tối đa 6** rồi đặt **Số câu tạo cùng lúc** từ 1 đến 6. Hộp chạy theo đợt cũng có lựa chọn này. App thử một câu trước; có âm thanh thành công mới mở số kết nối đã chọn. Giới hạn dùng chung giữa tất cả các lượt, không phải 6 kết nối cho mỗi lượt.
+
+- Khi gặp **NoAudioReceived**, mỗi câu có tối đa **9 lần gửi tổng cộng**. Khoảng chờ tăng theo lần thử: 1,5 giây × số lần đã thử, cộng ngẫu nhiên dưới 1 giây. Câu đang chờ không giữ chỗ kết nối; những câu khác vẫn tiếp tục. Phản hồi rỗng không tự làm giảm tải hoặc dừng toàn bộ hàng đợi trong chế độ này.
+- Câu vẫn lỗi sau 9 lần được ghi vào danh sách lỗi; các câu còn lại tiếp tục. Dùng **Rà thiếu / thử lại câu lỗi** để chạy lại phần thiếu. Không đổi lời hoặc giọng tự động.
+- Chế độ **Tự giảm tải · tối đa 2** vẫn là mặc định, kể cả dự án cũ: tối đa 5 lần/câu, giảm tải và nghỉ chung 10/20/40 giây khi lỗi rỗng dồn dập. Phần hướng dẫn phục hồi bên dưới áp dụng cho chế độ này.
+- Trong chế độ Thử lại từng câu, HTTP 429 dùng chung giới hạn 9 lần gửi của câu. Nếu dịch vụ gửi Retry-After, toàn bộ hàng đợi chờ theo thời gian yêu cầu. Chế độ Tự giảm tải vẫn nghỉ chung khi gặp 429. Cả hai chế độ dừng khi HTTP 403 hoặc lỗi chứng chỉ. Không tắt kiểm tra HTTPS. Chế độ 6 kết nối không bảo đảm dịch vụ sẽ luôn trả âm thanh hoặc nhanh hơn.
+- Đổi chế độ gửi không làm mất MP3 đã tạo; chạy tiếp dùng lại âm thanh hợp lệ của dự án. Không cần cài FastAPI, mở máy chủ hoặc cài thêm thư viện. MP3 được kiểm tra có âm thanh bằng FFprobe, không loại câu ngắn chỉ vì tệp dưới 1 KB.
+
+## Bản 0.3.7: giảm tải và thử phục hồi trước khi dừng
+
+- Sửa trường hợp tạo được vài câu rồi nhiều phản hồi rỗng từ cùng một đợt làm app dừng quá sớm. Các lỗi đang chạy cùng đợt chỉ khởi động một khoảng nghỉ chung; không cộng thành nhiều đợt phục hồi thất bại.
+- Trong chế độ Tự giảm tải, giới hạn là 1–2 kết nối cho toàn bộ lượt. Dự án cũ lưu 6 vẫn mở được và tự giới hạn khi chạy; không cần sửa file dự án. Chỉ tăng từ 1 lên 2 sau 4 câu thành công liên tiếp.
+- Khi lỗi dồn dập, app ghi rõ thời gian nghỉ chung 10, 20, 40 giây. Sau mỗi khoảng nghỉ chỉ 1 yêu cầu thử phục hồi; thành công thì tiếp tục và tăng tải từ từ. Có thể bấm Hủy trong lúc nghỉ.
+- Không xóa giọng đã tạo. Chạy lại lượt cũ dùng lại MP3 thành công, chỉ gửi các câu còn thiếu.
+
+## Mới: tạo giọng và xử lý NoAudioReceived
+
+- Vẫn dùng hai giọng Nam Minh và Hoài My. Bản này giữ `edge-tts==7.3.1`, là bản phát hành mới nhất đã đối chiếu ngày 02/11/2026; không chuyển sang API trả phí hoặc đổi giọng tự động.
+- Trong chế độ Tự giảm tải, câu lỗi được xếp lại sau các câu chưa thử, tối đa 5 lần/câu. Lỗi dồn dập không còn bị dừng ngay sau 8 phản hồi rỗng: app nghỉ chung 10 giây rồi chỉ 1 câu thử phục hồi. Nếu chưa được, nghỉ 20 rồi 40 giây; sau 3 đợt nghỉ và thử vẫn lỗi mới tạm dừng. Những phản hồi đã đang chạy từ cùng một đợt không bị đếm thành nhiều lần phục hồi thất bại.
+- Thời lượng MP3 mới được ghi vào bộ nhớ đệm sau khi kiểm tra; bước chuẩn bị âm thanh dùng lại kết quả thay vì chạy FFprobe lần hai. Không cần xóa giọng đã tạo.
+- Vào **4 · Sub và giọng → Âm thanh / giọng đọc → Kiểm tra kết nối hai giọng**. App gửi đúng một câu mẫu ngắn cho mỗi giọng, báo có/không có âm thanh, thời gian chờ hoặc loại lỗi; không lưu file thử và không sửa dự án. Kết quả chỉ phản ánh thời điểm kiểm tra.
+- Mỗi yêu cầu dùng giới hạn kết nối 10 giây, chờ dữ liệu 30 giây; câu ngắn còn có giới hạn tổng 45 giây, câu dài được nới theo độ dài. Có thể hủy khi đang gửi hoặc đang chờ lượt thử lại.
+- Nếu vẫn lỗi, dùng **Rà thiếu / thử lại câu lỗi** để chạy lại phần thiếu. Xem nút kiểm tra kết nối trước khi chạy lại toàn bộ; nếu một giọng lỗi còn giọng kia hoạt động, bạn tự chọn giọng phù hợp. Không cam kết khắc phục hoàn toàn việc dịch vụ Edge trả rỗng.
+
+## Mới: làm chậm hình thay vì ép nhanh câu đọc
+
+- Ở **4 · Sub và giọng → Âm thanh / giọng đọc**, tùy chọn **Câu dài: làm chậm video, giữ giọng** mặc định bật. App giữ tốc độ giọng đã tạo, kéo dài đoạn hình tương ứng và dời những câu sau cùng phụ đề. Không sửa chồng lên mốc SRT gốc.
+- Ví dụ đoạn `00:00:02,433 → 00:00:03,233` dài 0,8 giây, voice dài 2,567 giây: hình đoạn này phát chậm đến `00:00:05,000`; phần sau dời thêm 1,767 giây.
+- Nếu mốc SRT chồng nhau, khoảng hình của câu trước được giới hạn bởi mốc bắt đầu câu sau. Các câu có cùng mốc bắt đầu được đọc lần lượt theo thứ tự SRT, có khoảng nghỉ 40 ms.
+- Bấm **Phát** hoặc **Câu quá dài…** để ghép lại giọng đã có sau khi chỉnh. MP3 cũ được dùng lại; không gọi lại Edge TTS chỉ vì đổi chế độ đồng bộ. Timeline và các ô sửa vẫn dùng mốc nguồn; khi lưu SRT chọn **Mốc bản cuối** để lấy mốc sau kéo giãn.
+- Giữ **Tăng tốc bản cuối × = 1,00** nếu muốn giữ nguyên tốc độ giọng đã tạo. Tốc độ đọc thủ công và tốc độ bản cuối vẫn có tác dụng khi bạn chủ động chỉnh. Bỏ chọn làm chậm video để dùng chế độ ép giọng cũ.
+- **Tắt âm gốc khi ghép giọng Việt** mặc định bật, tránh thoại Trung nghe chồng lên tiếng Việt. Nó tắt cả nhạc và hiệu ứng gốc, không tách riêng tiếng nói. Bỏ chọn nếu muốn trộn âm nguồn theo mức âm lượng đang đặt. Tùy chọn tắt âm gốc riêng vốn có vẫn được giữ.
+- **Xem thử 10 giây** kiểm tra kết quả dựng bằng FFmpeg. Đoạn nguồn 10 giây có thể dài hơn sau khi giãn. Xuất toàn video giữ đủ câu đọc cuối; xuất vùng chỉ giữ lời trong đúng biên vùng đã chọn.
+- Bản xuất đồng bộ dùng 30 fps, có thể thấy lặp khung ở đoạn chậm; không có nội suy chuyển động AI. Xử lý lần lượt các đoạn nhỏ, hỗ trợ bộ mã hóa GPU đang có và dùng CPU khi không khả dụng. Cần dung lượng đĩa tạm; ghép cuối không mã hóa lại hình.
+- Chỉnh cắt khung/lật vẫn ở **2 · Hình ảnh → Khung và màu**; chữ/logo và phụ đề Việt giữ đúng chiều. Cắt/lật không bảo đảm tránh Content ID.
+
+Kiểm tra dành cho người phát triển: `python -m unittest discover -s tests -v`. Các bài kiểm tra mới dựng video và âm thanh tổng hợp bằng FFmpeg, không gọi Edge TTS; cần thử thêm trên Windows với video thực tế.
+
+Ứng dụng desktop dành cho Windows để chỉnh hình, che phụ đề gốc, thêm chữ/logo, phụ đề Việt và giọng đọc. Giao diện làm việc theo năm bước với một bảng chỉnh cố định bên phải.
 
 ## 1. Cài đặt và mở
 
-1. Giải nén toàn bộ `HuyenAnhStudio-v0.1.0.zip` vào một thư mục riêng, ví dụ `F:\HuyenAnhStudio`. Không mở ứng dụng trực tiếp trong ZIP.
+1. Đặt mã nguồn trong một thư mục riêng, ví dụ `E:\HuyenAnhStudio`. Nếu tải dạng ZIP, giải nén toàn bộ trước khi mở.
 2. Máy cần Python **64-bit 3.11, 3.12 hoặc 3.13**. Nếu máy đã có Python 3.11.9 thì có thể dùng bản đó. Bộ cài tạo môi trường riêng, không dùng chung môi trường ứng dụng khác.
 3. Máy cần **FFmpeg và FFprobe**. Nếu hai lệnh này chạy được trong CMD, không cần cài lại. Nếu chưa, đặt `ffmpeg.exe` và `ffprobe.exe` vào thư mục `tools` của app. Dùng bản có libass và libx264. Nguồn tải: https://ffmpeg.org/download.html
 4. Chạy **`install.cmd`** một lần, có kết nối mạng để tải các thư viện.
@@ -14,118 +64,83 @@
 
 Đây là bản mã nguồn kèm trình khởi chạy, chưa phải tệp EXE độc lập. Không cần API key. Video được đọc và xử lý trên máy. Khi tạo giọng, văn bản câu phụ đề được gửi đến dịch vụ giọng nói trực tuyến qua Edge TTS; không gửi cả video lên dịch vụ này.
 
-## 2. Quy trình chính
+## 2. Năm bước thao tác
 
-### Chọn nguồn
+Thanh phía trên có năm bước. Các bước chỉnh hình, chữ/logo, phụ đề và giọng đọc đều là tùy chọn. Chuyển bước chỉ thay đổi giao diện, không tự bật vùng che, lật hình hay thay đổi dữ liệu dự án. Bảng chỉnh ở bên phải dùng chung, không mở thêm cửa sổ chỉnh hình/chữ. Khi tác vụ đang chạy, các thao tác sửa và chuyển bước được khóa; vẫn có thể bấm Hủy tác vụ.
 
-- Bấm **＋ Video** để chọn video trên máy.
-- Bấm **＋ SRT** để nhập phụ đề tiếng Việt. File cần UTF-8 hoặc UTF-16 có BOM.
-- SRT phải sử dụng mốc của video gốc đã chọn. App kiểm tra và chặn xử lý nếu có câu vượt thời lượng video.
-- App giữ cả mục SRT trống; những mục này không hiện chữ và không được đọc.
+### 1 · Nguồn
 
-### Đặt phụ đề và che chữ cũ
+Bấm **Chọn / thay video…**. Tên, kích thước và thời lượng nguồn hiển thị ngay bên dưới. Trong **Khắc phục khi xem bị giật / mất tiếng** có tạo bản xem nhẹ toàn phim, dùng bộ phát CPU và chọn lại loa/tai nghe. Các bản xem nhẹ không làm thay đổi nguồn dùng khi xuất.
 
-- Chọn một câu để nhảy video đến vị trí đó.
-- Chỉnh phông, cỡ chữ, màu, in đậm, viền, bóng và chiều rộng trong bảng bên phải.
-- Có ba kiểu sẵn: trắng viền đen, vàng viền đen, trắng nền đen.
-- Kéo trực tiếp chữ trên khung video, hoặc nhập vị trí X/Y theo phần trăm khung hình.
-- Bật **vùng che**, chọn làm mờ hoặc phủ màu. Chỉ vùng hình chữ nhật đã chọn bị tác động.
-- Bật **Kéo vùng che**, kéo trong khung video để di chuyển. Kéo góc phải dưới để đổi kích thước; cũng có thể nhập X/Y/rộng/cao.
-- Thu nhỏ vùng che vừa đủ ôm chữ Trung để hạn chế ảnh hưởng đến hình ảnh.
-- Làm mờ chỉ che nội dung vùng chọn, không tái tạo cảnh bị chữ che khuất. Chữ cũ có thể vẫn lộ nếu chọn vùng hoặc cách che chưa đủ.
-- Vùng che hiện áp dụng cố định suốt video; bản này chưa có keyframe cho vùng che di chuyển.
+### 2 · Hình ảnh
 
-Khung xem trực tiếp mô phỏng kiểu chữ và vùng mờ để chỉnh nhanh. **Xuất thử 10 giây** dùng bộ dựng FFmpeg thật để kiểm tra kết quả, vì cách xuống dòng, bóng/viền và mức mờ có thể khác đôi chút giữa hai bộ hiển thị.
+**Che sub gốc** dành cho phụ đề hoặc chữ có sẵn trong hình. Bật vùng che, chọn vùng mẫu và kiểu mờ thường, mờ mềm, ô vuông/mosaic hoặc phủ màu. Bật **Kéo vùng che** để di chuyển và kéo góc dưới phải để đổi kích thước. Chế độ này tạm hiển thị hình nguồn để đặt vùng chính xác. Các thông số tọa độ, màu, độ đậm và quản lý nhiều vùng nằm trong phần nâng cao. Vùng chính áp dụng suốt video; các vùng thêm có mốc thời gian riêng. Mờ hay mosaic không khôi phục được cảnh thật phía sau chữ.
 
-### Chỉnh câu và timeline
+**Khung và màu** dành cho lật gương, crop/giữ đủ hình, zoom và tỷ lệ xuất. Có kích thước nguồn, ngang 16:9, dọc 9:16, vuông 1:1, 4:3 và kích thước tự nhập. Chọn tự nhập để mở rộng/cao; giá trị là số chẵn từ 64 đến 7680 px. Zoom từ 1 đến 3 lần. Kéo hình trên preview hoặc cuộn chuột để zoom khi đang ở tab này. Tọa độ crop, nền màu, nền mờ và viền nằm trong phần nâng cao; màu sắc và lớp phủ có phần riêng có thể mở rộng.
 
-- Danh sách trái có ô tìm nội dung và bộ lọc câu voice quá dài.
-- Chọn câu → sửa văn bản, bắt đầu, kết thúc → bấm **Áp dụng câu**.
-- Mốc trong ô chỉnh câu là mốc **video gốc**, dạng `00:01:23,456`.
-- Sửa trong ô sẽ được áp dụng khi chuyển câu, lưu dự án hoặc bắt đầu xuất/tạo voice. Mốc không hợp lệ phải sửa trước khi tiếp tục.
-- Kéo khối câu trên timeline để di chuyển. Kéo mép trái/phải để đổi bắt đầu/kết thúc.
-- Khối voice và phụ đề cùng một câu được liên kết: kéo ở một thanh sẽ thay đổi cùng mốc, không tách voice trôi sang câu khác.
-- Thanh VIDEO đại diện cho toàn bộ nguồn. Bản này không có cắt ghép nhiều video hoặc nhiều lớp hình.
-- Dùng thanh thu phóng, Ctrl + lăn chuột, thanh cuộn ngang hoặc **Vừa toàn bộ**.
-- Bấm vùng trống trên timeline để tua. Có thanh tua bên dưới khung video và nút lùi/tiến 5 giây.
-- Ctrl+Z hoàn tác, Ctrl+Y làm lại; lưu tối đa 40 bước trong phiên mở app. F11 vào/thoát toàn màn hình.
+Đổi sang tab Khung và màu hoặc rời bước Hình ảnh sẽ tự thoát chế độ kéo vùng che. Thứ tự dựng là **che hình nguồn → lật / đổi khung → chữ, logo và phụ đề Việt**. Chữ có sẵn trong video bị lật; chữ Việt và logo thêm bằng app vẫn đúng chiều.
 
-### Chọn tốc độ trước khi tạo giọng
+### 3 · Chữ / logo
 
-Mọi câu luôn lưu mốc theo video gốc. Các tốc độ chỉ biến đổi cách phát và cách xuất; không sửa chồng lên mốc gốc sau mỗi lần điều chỉnh.
+Thêm chữ, ảnh logo PNG/JPG/WebP/BMP hoặc biểu tượng. Có mẫu thông báo hai dòng với vạch đỏ, cùng mẫu chữ viền trắng, vàng, nhãn nền tối và xanh ngọc. Biểu tượng có trái tim, ngôi sao, nút phát, nốt nhạc và thông tin.
 
-| Thiết lập | Ý nghĩa |
-|---|---|
-| Tốc độ dựng | Ví dụ 0,80×: video chậm lại, khoảng dành cho từng câu đọc dài gấp 1,25 lần. |
-| Tăng tốc bản cuối | Áp dụng cùng lúc lên video, sub cứng và voice khi xuất. |
-| Bản cuối về tốc độ gốc | Đặt tốc độ cuối bằng nghịch đảo tốc độ dựng. |
-| Chế độ xem trước | Chọn nghe/xem theo tốc độ dựng hoặc theo tốc độ bản cuối. |
+Chọn một lớp trong danh sách rồi chỉnh nội dung, phông/cỡ/màu phù hợp loại lớp. Logo không hiện các thông số chữ; biểu tượng không hiện phần nhập văn bản. Kéo lớp trên preview để di chuyển, kéo góc dưới phải để đổi kích thước. **Vị trí, thời gian và trang trí** chứa tọa độ, mốc đầu/cuối theo giây nguồn, viền, bóng, nền, bo góc và vạch dọc. Tăng rộng/cao nếu chữ bị cắt trong khung.
 
-Ví dụ câu ở mốc gốc 10–12 giây:
+Có thể nhân đôi, xóa hoặc đổi thứ tự lớp. Lớp cuối danh sách được vẽ trên các lớp trước; phụ đề SRT được ghép sau các lớp trang trí. Ảnh logo được tham chiếu bằng đường dẫn gốc; khi chuyển dự án sang máy khác, chọn lại ảnh nếu đường dẫn không còn đúng.
 
-- Dựng 0,80× → câu xuất hiện và voice được đặt ở 12,5–15 giây.
-- Xuất tăng 1,25× → cả ba thành phần trở về mốc 10–12 giây.
-- Voice cũng nhanh thêm 1,25× khi xuất. Vì vậy, làm chậm rồi tăng trở lại không tạo thêm thời gian đọc trong bản cuối. Hãy nghe thử ở chế độ **Theo tốc độ bản cuối**.
+Bật **Chừa dải bên** nếu muốn đặt tên kênh/logo ở phần bên phải hoặc trái của khung. Các thông số nền và độ rộng chỉ hiện khi bật dải bên. Nút **Đặt lớp đang chọn vào dải bên** đưa lớp vào vùng đó. Kích thước xuất không đổi; nếu chưa bật chỉnh khung, video giữ đủ hình trong phần còn lại. Nếu đã bật, kiểu crop/fit/nền mờ đang chọn tiếp tục được dùng.
 
-App dùng thay đổi tốc độ âm thanh có giữ cao độ bằng FFmpeg; ép quá nhanh vẫn làm giọng khó nghe. Hình ảnh xuất theo từng khung hình nên độ chính xác hiển thị bị giới hạn bởi tốc độ khung hình, dù SRT được lưu đến mili-giây.
+### 4 · Sub và giọng
 
-### Tạo và nghe voice
+Danh sách phụ đề tự hiện ở bước này. Bật **Dòng thời gian** khi cần chỉnh mốc hoặc chọn vùng. Bấm **Nhập SRT…** ở danh sách trái để nhập một hay nhiều tệp phụ đề Việt. SRT dùng mốc nguồn, mã hóa UTF-8 hoặc UTF-16 có BOM; câu vượt thời lượng nguồn cần sửa trước khi xuất. Các mục trống được giữ nhưng không hiện chữ và không đọc.
 
-- Chọn **Nam Minh · Nam** hoặc **Hoài My · Nữ**.
-- Có tốc độ đọc chung và tốc độ cộng thêm riêng từng câu. Có thể chọn giọng riêng từng câu để luân phiên nam/nữ.
-- **Nghe câu** tạo giọng câu đang chọn. Nếu câu đủ điều kiện, phát bản đã khớp thời lượng; nếu quá dài, phát bản chưa ép và thông báo rõ.
-- Bấm **Tạo / cập nhật voice** để tạo toàn bộ.
-- App đọc tuần tự, có tiến độ, thử lại khi kết nối lỗi và lưu từng MP3 đã hoàn tất. Bấm **Hủy tác vụ** để dừng. Khi chạy lại, câu có cùng nội dung/giọng/tốc độ sẽ dùng lại MP3 đã tạo.
-- Voice ngắn hơn ô thời gian: thêm im lặng vào cuối ô. Voice dài hơn: tăng tốc trong giới hạn bạn chọn.
-- Nếu vượt **Giới hạn ép câu**, app đánh dấu `Dài …×` và chưa ghép voice hoàn chỉnh. Không tự rút gọn nội dung hay cố tình cắt bỏ phần cuối lời đọc để vượt kiểm tra.
-- Bạn có thể giảm tốc độ dựng, tăng giới hạn ép nếu chấp nhận giọng nhanh hơn, kéo dài khoảng câu hoặc tự sửa câu ngắn lại, rồi tạo tiếp. Nếu kéo dài mốc, kiểm tra không đè lời của câu kế tiếp.
-- Thay đổi nội dung, mốc, giọng hoặc tốc độ dựng khiến bản voice tổng cần ghép lại. Đổi màu chữ, vùng che, âm lượng hoặc tốc độ cuối không cần gọi lại TTS.
-- Voice dài nhiều giờ sẽ cần thời gian và dung lượng ổ đĩa; WAV mono 24 kHz dùng khoảng 173 MB mỗi giờ, chưa tính MP3 và WAV từng câu.
-- Edge TTS cần mạng và phụ thuộc dịch vụ bên ngoài, có thể lỗi hoặc giới hạn kết nối. Không có cam kết sử dụng không giới hạn hay luôn hoạt động.
+Trong **Kiểu phụ đề**, chọn một trong sáu mẫu, phông, cỡ và màu chữ. Vị trí phụ đề hiện ngay trong phần chính: chọn Trên/Giữa/Dưới hoặc nhập X/Y và chiều rộng. Bật **Kéo vị trí phụ đề trên video** để kéo khung vàng trên preview; vị trí áp dụng cho toàn bộ SRT và được giữ đúng chiều sau khi lật hình. Khi có dải bên, vị trí tính theo phần video còn lại. Viền, nền, in nghiêng, giãn chữ và hiện/ẩn mềm nằm ở phần nâng cao. Khi tự thay đổi thông số, bộ chọn mẫu hiển thị Tùy chỉnh nếu không còn khớp mẫu sẵn. Khi có dải bên, vị trí và chiều rộng phụ đề dựa trên phần video còn lại.
 
-### Nghe cùng video và xuất
+Nhấp đúp câu để sửa trong khung gắn ở đáy app. Mốc câu ở dạng 00:01:23,456 theo nguồn. Nội dung được áp dụng khi chuyển câu, rời bước, lưu hoặc bắt đầu tác vụ; mốc sai cần sửa trước. Kéo khối câu để dịch mốc, kéo mép để đổi thời lượng; giữ Ctrl để chọn nhiều và Shift+kéo để chọn vùng. Các thanh phụ đề và voice của cùng câu dùng chung mốc. Đóng/mở **Dòng thời gian** để có thêm diện tích xem; khi sửa câu, dòng thời gian tạm thu lại.
 
-- Khi voice đã đầy đủ, bấm **Phát** để nghe cùng video.
-- **Âm gốc** giảm toàn bộ âm thanh gốc, gồm giọng Trung, nhạc và hiệu ứng. Bản này chưa tách riêng giọng Trung khỏi nhạc. Đặt 0% để tắt toàn bộ âm gốc.
-- **Voice Việt** chỉnh âm lượng lớp lồng tiếng.
-- **Xuất thử 10 giây** bắt đầu tại vị trí đang xem, theo tốc độ bản cuối; có voice nếu bản voice đang hợp lệ. Nếu chưa có voice hợp lệ, đoạn thử chỉ chứa sub và âm gốc theo thiết lập.
-- **Xuất video** cho chọn có hoặc không kèm voice. Xuất MP4 H.264/AAC với sub được ghi cứng vào hình.
-- Khi xuất, sub được dựng theo mốc nguồn rồi toàn bộ hình được đổi tốc độ, vì vậy chữ bám theo video. Không cần tạo tệp trung gian chỉ để khóa sub.
-- Không ghi đè video nguồn hoặc tệp MP4 đã tồn tại: chọn tên xuất mới.
-- **Lưu SRT** có ba lựa chọn: mốc gốc, mốc dựng, mốc bản cuối.
-- **Lưu voice WAV** lưu riêng lớp tiếng Việt theo **tốc độ dựng**.
+Trong **Âm thanh / giọng đọc**, mục **Tốc độ video dựng ×** nằm ngay trên phần tạo giọng, không ở trong nâng cao. Nếu lời quá dài, giảm tốc video trước (ví dụ 0,8×), rồi chọn giọng, tốc độ đọc và phạm vi, bấm **Tạo / cập nhật giọng đọc…**. Chỉ có một nút tạo, với bốn phạm vi: theo đợt, toàn bộ dự án, câu đang chọn hoặc vùng thời gian. Theo đợt phù hợp video dài. **Kiểm tra / sửa giọng đọc** chứa câu thiếu/lỗi, câu quá dài và lưu WAV. Chế độ gửi và số câu tạo đồng thời hiện ngay trong phần giọng đọc. Giới hạn ép câu, xóa dữ liệu giọng và tách âm nền nằm trong phần nâng cao.
 
-## 3. Lưu và mở lại
+- Giọng ngắn hơn khoảng câu được thêm im lặng. Khi bật làm chậm video, câu dài kéo giãn đoạn hình và dời các câu sau; khi tắt, app tăng tốc giọng trong giới hạn đã đặt.
+- MP3 có cùng văn bản, giọng và tốc độ được dùng lại khi chạy tiếp. Có tiến độ, thử lại khi lỗi và hủy tác vụ; không tự rút gọn văn bản.
+- Trong chế độ **Tự giảm tải**, các lượt dùng chung tối đa **2 kết nối**, kể cả dự án cũ đã lưu 3–6. App bắt đầu bằng 1 kết nối, chỉ tăng lên 2 sau 4 câu thành công liên tiếp của đợt hiện tại. Khi có phản hồi rỗng, app về 1 kết nối. Hai lỗi liên tiếp bắt đầu đợt nghỉ chung; phản hồi cũ đang chạy được thu hồi mà không kéo dài thêm thời gian nghỉ. Câu lỗi được thử lại sau các câu mới, tối đa 5 lần/câu. Không tự đổi lời hoặc giọng đọc.
+- Khi bị giới hạn **429** ở chế độ Tự giảm tải, hoặc khi gặp lỗi mạng hay lỗi dịch vụ khác, các câu cùng chờ 5 rồi 10 giây (hoặc thời gian dịch vụ yêu cầu), chỉ 1 câu thử phục hồi; sau 3 lần chưa phục hồi thì dừng. Trong chế độ Tự giảm tải, với **NoAudioReceived dồn dập**, dùng các đợt nghỉ 10, 20, 40 giây và thử lần lượt bằng 1 câu trước khi dừng. Lỗi chứng chỉ HTTPS vẫn dừng ngay, không tắt xác minh TLS. Có thể hủy khi đang nghỉ. MP3 đã thành công và lỗi của các câu đã xử lý được giữ để chạy tiếp.
+- Âm video gốc giảm cả tiếng nói, nhạc và hiệu ứng. **Tắt âm thanh gốc** bỏ toàn bộ tiếng này khi xem/xuất và giữ mức âm lượng cũ để khôi phục khi bỏ chọn. **Giọng Việt (%)** trong **4 · Sub và giọng → Âm thanh / giọng đọc** chỉnh riêng từ **0 đến 600%**: 100% giữ mức giọng đã tạo, 200% khuếch đại 2 lần, 300% là 3 lần. Mức trên 100% có bộ giới hạn đỉnh để hạn chế vỡ tiếng; độ lớn cảm nhận còn phụ thuộc bản giọng và phần âm gốc đang trộn.
+- Mức giọng Việt được dùng khi nghe trên timeline, nghe từng câu, xem thử 10 giây, xuất toàn bộ video và lưu giọng WAV. Đổi âm lượng dùng lại MP3/giọng đã ghép, không cần gọi lại TTS. Lần đầu nghe mức trên 100%, app chuẩn bị một bản âm thanh tăng âm, giữ nguyên video và giọng gốc. Video dài cần chờ xử lý phần âm thanh này; cùng mức và cùng nguồn được dùng lại, giữ tối đa hai bản tăng âm cho mỗi nguồn khi có thể xóa tệp cũ. Giảm về 100% hoặc thấp hơn dùng trực tiếp giọng gốc. Khi đang nghe thử một câu, đổi mức sẽ dừng câu đó; bấm nghe câu lại để dùng mức mới. Bản xuất và WAV luôn áp dụng mức đang chọn trực tiếp.
+- **Giảm nền / chỉ giữ lời nói…** mở bộ tách AI: nền 0% dùng trực tiếp phần giọng đã tách; mức cao hơn trộn lại một phần nền. Có lọc nhẹ tiếng ù/nhiễu, có thể làm giọng mỏng đi. Hãy nghe lượt thử 30 giây trước khi áp dụng toàn video. Đổi mức nền hoặc lọc dùng lại các đoạn AI đã hoàn tất. Cần cài riêng bằng CAI-GIAM-NHAC.cmd, hoặc CAI-GPU-GTX.cmd cho DirectML. Không có cam kết tách sạch mọi tiếng động.
+- Edge TTS cần mạng, văn bản được gửi tới dịch vụ ngoài và có thể gặp lỗi/giới hạn. Voice dài nhiều giờ cần thời gian và dung lượng; WAV mono 24 kHz dùng khoảng 173 MB/giờ, chưa tính tệp từng câu.
 
-- Ctrl+S hoặc **Lưu** tạo tệp dự án `.ha.json`, giữ nguồn video, toàn bộ phụ đề và thiết lập.
-- App tham chiếu video gốc, không chép video vào dự án. Nếu video đã chuyển chỗ, lúc mở lại app sẽ yêu cầu chọn đúng nguồn.
-- Voice được lưu ở thư mục dữ liệu người dùng của app, tách khỏi thư mục mã nguồn. Không xóa bộ nhớ voice khi đang cần dùng lại dự án.
-- Chép riêng tệp dự án sang máy khác không mang theo video và bộ nhớ voice. Cần chọn lại video và tạo lại voice trên máy mới.
-- Cập nhật mã nguồn sau này: đóng app, thay các tệp chương trình; giữ nguyên các tệp dự án và video. Chỉ chạy lại `install.cmd` nếu thư viện thay đổi.
+Nếu nhật ký báo **HTTP 403**, dịch vụ đang từ chối kết nối. Bản 0.3.2 dùng **edge-tts 7.3.1** thay cho 7.2.8 và dừng hàng đợi ngay khi gặp lỗi này. Đóng app, cập nhật mã rồi chạy **install.cmd** để cập nhật thư viện; chỉ git pull và mở lại chưa đủ. Giữ nguyên dự án và thư mục voice, sau đó chạy tiếp các lượt đang thiếu. Nhật ký ghi phiên bản Edge TTS khi tạo giọng. Nếu đã dùng 7.3.1 mà vẫn 403, kiểm tra ngày giờ Windows và mạng/dịch vụ, tránh chạy lại hàng nghìn câu liên tiếp. Nguồn sửa lỗi: [Edge TTS #490](https://github.com/rany2/edge-tts/issues/490), [bản 7.3.1](https://github.com/rany2/edge-tts/releases/tag/7.3.1).
 
-## 4. Kiểm tra và giới hạn bản này
+### 5 · Xuất video
 
-Đã kiểm tra trên môi trường Linux chạy Python 3.12 và Qt chế độ không màn hình:
+Đây là nơi duy nhất chọn chế độ và xuất video hoàn chỉnh. Kiểm tra kích thước, thời lượng nguồn/bản xuất và âm thanh trong phần tóm tắt. Bật **Ghép giọng Việt đã tạo** nếu cần; không có hộp thoại thứ hai để chọn lại âm thanh hay tự tăng âm gốc về 100%.
 
-- Mở giao diện, nạp danh sách SRT dài, chỉnh câu, tự áp dụng khi chuyển câu, hoàn tác, đổi tốc độ.
-- 9 bài kiểm tra tự động: giữ mili-giây/mục trống/nhiều dòng, từ chối SRT sai, cập nhật bộ nhớ voice, căn vị trí âm thanh theo mẫu, ghép im lặng, hủy tác vụ, chặn voice cũ, xuất MP4 thực tế.
-- Xuất thử cả phủ màu và làm mờ, sub tiếng Việt, phối âm và hai mức tốc độ. Đo thời lượng tệp và kiểm tra chữ/âm thanh trước–trong–sau khoảng câu.
+Ba mức xuất là Nhanh, Nhanh nhất tự dùng GPU và Nén gọn. Mức nhanh nhất thử NVIDIA NVENC, Intel Quick Sync, AMD AMF bằng một lượt mã hóa ngắn ở đúng kích thước; nếu không khả dụng sẽ dùng CPU ultrafast và ghi lý do vào nhật ký. Hai mức còn lại dùng CPU. GPU chỉ tăng tốc mã hóa; hiệu ứng và phụ đề vẫn có thể giới hạn tốc độ. Tiến độ hiển thị bộ mã hóa, tốc độ thực tế và thời gian còn lại; thời gian là ước tính.
 
-Chưa chạy thử trực tiếp trên máy Windows của bạn. Lệnh gọi trực tiếp danh sách giọng Edge TTS trong môi trường kiểm tra bị hết thời gian chờ, nên chưa xác minh được tải giọng thật tại đây. Phần xử lý âm thanh đã được kiểm tra bằng âm tổng hợp, không được coi là kiểm thử dịch vụ TTS trực tiếp. Sau khi cài, hãy dùng **Nghe câu** và **Xuất thử 10 giây** trước khi tạo cả phim dài.
+**Xem thử 10 giây** bên dưới preview dùng cùng thiết lập hình và lựa chọn âm thanh/giọng Việt ở bước Xuất, bắt đầu tại con trỏ. Xem thử không tạo lại voice. Nếu đã chọn ghép giọng nhưng voice chưa hợp lệ, cần cập nhật hoặc bỏ chọn trước. **Xuất toàn bộ video…** luôn dựng từ đầu đến cuối, không phụ thuộc vùng timeline. Chọn tên MP4 mới; video nguồn và tệp đã có không bị ghi đè. Kết quả hoàn chỉnh mở trong trình phát của app.
 
-Nếu lỗi, mở **Nhật ký** để lấy thông báo. Lỗi khởi động được ghi vào `startup-error.log` cạnh `main.py`. Không xóa video hay dự án để xử lý lỗi cài thư viện.
+Tốc độ dựng được chỉnh ở bước **Sub và giọng → Âm thanh / giọng đọc** trước khi tạo voice. **Tốc độ bản cuối và thời lượng** ở bước Xuất chỉ chỉnh tốc độ bản cuối. Tổng tốc độ bằng tích hai mức; thời lượng bản xuất bằng thời lượng nguồn chia tổng tốc độ. Ví dụ nguồn 7 giờ ở tổng tốc độ 0,7× thành 10 giờ. Đổi tốc độ dựng ảnh hưởng việc ghép giọng; đổi tốc độ cuối không gọi lại dịch vụ TTS. Có thể nghe theo tốc độ dựng hoặc bản cuối ở bước Sub và giọng. Giảm rồi tăng tốc trở lại không tạo thêm thời gian đọc trong bản cuối.
 
-Muốn tự chạy kiểm tra dành cho phát triển:
+## 3. Lưu, cập nhật và khôi phục
+
+**Lưu dự án** hoặc Ctrl+S lưu `.ha.json`: nguồn, SRT, vùng che, hiệu ứng, lớp chữ/logo, dải bên và âm lượng. **Dự án** chứa mở, tạo mới và lưu thành. Ctrl+Z/Ctrl+Y để hoàn tác/làm lại. Dự án cũ vẫn mở được; thiết lập mới có mặc định khi chưa lưu trong dự án.
+
+App tham chiếu nguồn và ảnh logo, không sao chép chúng vào dự án. Voice nằm trong thư mục dữ liệu người dùng của app; giữ lại khi cần mở tiếp. Chuyển máy cần chọn lại nguồn/ảnh và mang theo dữ liệu voice hoặc tạo lại giọng.
+
+Cập nhật: đóng app, chạy `git pull --ff-only origin feat/video-frame-effects` trong thư mục dự án rồi mở start.cmd. Chỉ cần cài lại thư viện nếu requirements thay đổi. Không xóa dự án, video hay bộ nhớ voice để xử lý lỗi giao diện.
+
+Nếu lỗi, mở **Nhật ký**. Lỗi khởi động nằm trong startup-error.log cạnh main.py. Tùy chọn giải mã CPU, bản xem nhẹ và khôi phục loa nằm ở phần khắc phục của bước Nguồn.
+
+## 4. Kiểm tra và giới hạn
+
+Đã kiểm tra trên Linux với Qt chế độ không màn hình, có xuất MP4 thực tế. Chưa chạy trực tiếp trên máy Windows của bạn, chưa kiểm tra chất lượng tách AI hoặc dịch vụ TTS trên video thực tế của bạn. Preview có độ phân giải thấp hơn bản xuất; logo/chữ tĩnh được dựng một lần và ghép theo nhóm cùng thời gian. Không có cắt ghép nhiều nguồn hoặc keyframe cho vùng che.
+
+Lệnh kiểm tra dành cho phát triển:
 
 ```bat
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-## Nguồn kỹ thuật
+Nguồn kỹ thuật: [FFmpeg](https://ffmpeg.org/ffmpeg-filters.html), [Qt](https://doc.qt.io/qtforpython-6/), [Edge TTS](https://github.com/rany2/edge-tts).
 
-- Edge TTS: https://github.com/rany2/edge-tts
-- FFmpeg filters: https://ffmpeg.org/ffmpeg-filters.html
-- Qt video: https://doc.qt.io/qtforpython-6/PySide6/QtMultimediaWidgets/QGraphicsVideoItem.html
-
-Ảnh `Giao-dien.png` được chụp từ giao diện thật của ứng dụng, dùng nền minh họa và ba câu mẫu tự tạo; không phải video hay SRT của người dùng.

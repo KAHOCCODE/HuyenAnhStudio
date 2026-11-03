@@ -1,12 +1,29 @@
 """Original-media timestamps are canonical; speed is a non-destructive transform."""
 from __future__ import annotations
-import asyncio, hashlib, json, math, os, re, shutil, subprocess, threading, time, uuid, wave
+import asyncio, copy, hashlib, json, math, os, re, shutil, subprocess, threading, time, uuid, wave
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Callable
+from .retiming import voice_timing, map_time, source_rate
+from .video_effects import settings as effect_settings, output_size, picture_filter
+from .composition import validate_composition, prepare_layers, artwork_filter, sidebar_settings, subtitle_area
+from .tts import TTSCooldown, TTSServiceError, TTSDeferredRetry, fetch_voice, context as _tts_context, edge_client
 
 RATE = 24000
 ROOT = Path(__file__).resolve().parent.parent
+VOICE_VOLUME_MAX = 6.0
+AUDIO_LIMITER = 'alimiter=limit=0.97:level=false:latency=true'
+
+
+def validate_voice_volume(value):
+    if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or not 0<=value<=VOICE_VOLUME_MAX:
+        raise ValueError('Âm lượng giọng Việt phải từ 0 đến 600%.')
+    return float(value)
+
+
+def voice_volume_filter(value):
+    gain=validate_voice_volume(value)
+    return f'volume={gain:.6f}'+(','+AUDIO_LIMITER if gain>1 else '')
 
 @dataclass
 class Cue:
@@ -31,22 +48,31 @@ class Project:
     final_speed: float = 1.0
     voice: str = 'vi-VN-NamMinhNeural'
     tts_rate: int = 0
-    tts_workers: int = 3
+    tts_workers: int = 2
+    tts_retry_mode: str = 'adaptive'
     voice_batch_minutes: int = 10
     voice_batch_index: int = 0
     batch_reviewed: dict = field(default_factory=dict)
     voice_batch_kept: list = field(default_factory=list)
     export_preset: str = "veryfast"
+    video_effects: dict = field(default_factory=dict)
     max_fit: float = 1.6
+    slow_video_for_voice: bool = True
+    mute_original_when_dubbed: bool = True
     music_clean: dict = field(default_factory=dict)
     music_threads: int = 2
     music_backend: str = "cpu"
+    original_muted: bool = False
     original_volume: float = .12
     voice_volume: float = 1.0
     style: dict = field(default_factory=lambda: dict(font='Arial', size=52, color='#FFFFFF', outline=3, shadow=2, bold=True, x=50., y=88., width=88., box=False))
+    overlays: list = field(default_factory=list)
+    sidebar: dict = field(default_factory=dict)
     screen_regions: list = field(default_factory=list)
     mask: dict = field(default_factory=lambda: dict(enabled=False, mode='blur', x=8., y=80., w=84., h=14., opacity=1.0, color='#171717'))
 
+    @property
+    def original_gain(self): return 0.0 if self.original_muted else self.original_volume
     @property
     def speed(self): return self.work_speed * self.final_speed
     @property
@@ -60,6 +86,7 @@ class Project:
         p = cls(**data)
         if not (.25 <= p.work_speed <= 2 and .25 <= p.final_speed <= 4): raise ValueError('Tốc độ không hợp lệ.')
         if not 1<=p.tts_workers<=6:raise ValueError('Số luồng TTS phải trong khoảng 1–6.')
+        if p.tts_retry_mode not in ('adaptive','per_cue'):raise ValueError('Chế độ thử lại giọng không hợp lệ.')
         if not isinstance(p.voice_batch_minutes,int) or not 1<=p.voice_batch_minutes<=120:raise ValueError('Đợt voice phải dài từ 1 đến 120 phút.')
         if not isinstance(p.voice_batch_index,int) or p.voice_batch_index<0:raise ValueError('Số thứ tự đợt voice không hợp lệ.')
         if not isinstance(p.batch_reviewed,dict):raise ValueError('Trạng thái rà lô không hợp lệ.')
@@ -74,6 +101,11 @@ class Project:
         if not isinstance(p.music_threads,int) or not 1<=p.music_threads<=8:raise ValueError('Số luồng giảm nhạc phải từ 1 đến 8.')
         if not isinstance(p.music_clean,dict):raise ValueError('Cấu hình giảm nhạc không hợp lệ.')
         if p.export_preset not in ('ultrafast','veryfast','medium'):raise ValueError('Chế độ xuất không hợp lệ.')
+        if not isinstance(p.original_muted,bool):raise ValueError('Trạng thái tắt âm gốc không hợp lệ.')
+        if not isinstance(p.slow_video_for_voice,bool) or not isinstance(p.mute_original_when_dubbed,bool):raise ValueError('Thiết lập đồng bộ voice không hợp lệ.')
+        validate_voice_volume(p.voice_volume)
+        effect_settings(p.video_effects)
+        validate_composition(p)
         for region in p.screen_regions:validate_screen_region(region,p.duration)
         if len({r["id"] for r in p.screen_regions})!=len(p.screen_regions):raise ValueError("ID vùng chữ bị trùng.")
         for c in p.cues: validate_cue(c)
@@ -127,6 +159,21 @@ def read_srt(path):
 def write_srt(path,cues,speed=1):
     Path(path).write_text('\n\n'.join(f'{i+1}\n{stamp(c.start/speed)} --> {stamp(c.end/speed)}\n{c.text}' for i,c in enumerate(cues))+'\n',encoding='utf-8-sig')
 
+def retimed_cues(p,timing):
+    from bisect import bisect_right
+    starts=sorted(r['start'] for r in timing['rows'].values())
+    result=[]
+    for cue in p.cues:
+        c=copy.deepcopy(cue);r=timing['rows'].get(c.id)
+        c.start=r['start'] if r else map_time(timing,c.start)
+        c.end=max(r['end'],r['cue_end']) if r else map_time(timing,c.end)
+        if r:
+            i=bisect_right(starts,c.start+1e-8)
+            if i<len(starts):c.end=min(c.end,starts[i])
+        result.append(c)
+    return result
+
+
 def plain(s):
     import html
     return html.unescape(re.sub(r'</?(?:b|i|u|font)(?:\s[^>]*)?>','',s,flags=re.I)).strip()
@@ -137,13 +184,13 @@ def binary(name):
     if not found: raise RuntimeError(f'Không tìm thấy {name}. Thêm FFmpeg vào PATH hoặc đặt ffmpeg.exe và ffprobe.exe vào thư mục tools.')
     return found
 
-def run(args,cancel=None,cwd=None,progress=None,total=0,capture=False):
+def run(args,cancel=None,cwd=None,progress=None,total=0,capture=False,timeout=None):
     """No shell. Drain output continuously; polling remains cancellable during silence."""
     import queue
     flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
     proc=subprocess.Popen([str(a) for a in args],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
         text=True,encoding='utf-8',errors='replace',cwd=cwd,creationflags=flags)
-    q=queue.Queue(); tail=[]
+    q=queue.Queue(); tail=[];started=time.monotonic()
     def read():
         for line in proc.stdout: q.put(line)
         q.put(None)
@@ -151,6 +198,7 @@ def run(args,cancel=None,cwd=None,progress=None,total=0,capture=False):
     try:
         while True:
             if cancel and cancel.is_set(): raise InterruptedError('Đã hủy. Dữ liệu đã tạo vẫn được giữ để tiếp tục.')
+            if timeout is not None and time.monotonic()-started>timeout:raise TimeoutError('Quá thời gian kiểm tra bộ mã hóa.')
             try: line=q.get(timeout=.1)
             except queue.Empty: continue
             if line is None: break
@@ -194,11 +242,13 @@ def ass_text(text):
     # ASS overrides must never execute supplied SRT text.
     return plain(text).replace('\\','\\\u200b').replace('{','｛').replace('}','｝').replace('\n',r'\N')
 
-def write_ass(path,p):
-    st=p.style; w,h=p.width,p.height
+def write_ass(path,p, *, cues=True, regions=True, canvas=None, mirror_regions=False):
+    st=p.style; w,h=canvas or (p.width,p.height)
     # Font size is specified on a 1080-high canvas, proportional for other resolutions.
     scale=h/1080
-    margin=max(0,round(w*(100-st['width'])/200))
+    origin_x,content_w,_=subtitle_area(p,w,h) if canvas and cues else (0,w,h)
+    margin=max(0,round(content_w*(100-st['width'])/200))
+    margin_left=origin_x+margin;margin_right=w-origin_x-content_w+margin
     header=f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: {w}
@@ -208,39 +258,55 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{st['font'].replace(',', '')},{st['size']*scale:.3f},{ass_color(st['color'])},&H000000FF,&H00000000,&H80000000,{-1 if st['bold'] else 0},0,0,0,100,100,0,0,{3 if st['box'] else 1},{st['outline']*scale:.3f},{st['shadow']*scale:.3f},2,{margin},{margin},10,1
+Style: Default,{st['font'].replace(',', '')},{st['size']*scale:.3f},{ass_color(st['color'])},&H000000FF,{ass_color(st.get('outline_color','#000000'))},&H80000000,{-1 if st['bold'] else 0},{-1 if st.get('italic') else 0},0,0,100,100,{st.get('spacing',0)*scale},0,{3 if st['box'] else 1},{st['outline']*scale:.3f},{st['shadow']*scale:.3f},2,{margin_left},{margin_right},10,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     events=[]
-    for c in p.cues:
+    for c in (p.cues if cues else []):
         if not plain(c.text): continue
         text=ass_text(c.text)
-        events.append(f'Dialogue: 0,{stamp(c.start,True)},{stamp(c.end,True)},Default,,0,0,0,,{{\\pos({w*st["x"]/100:.2f},{h*st["y"]/100:.2f})}}{text}')
-    for r in p.screen_regions:
+        if st.get('fade',0):text=r'{\fad('+str(round(st['fade']))+','+str(round(st['fade']))+')}' + text
+        events.append(f'Dialogue: 0,{stamp(c.start,True)},{stamp(c.end,True)},Default,,0,0,0,,{{\\pos({origin_x+content_w*st["x"]/100:.2f},{h*st["y"]/100:.2f})}}{text}')
+    for r in (p.screen_regions if regions else []):
         if not r.get('enabled',True) or not plain(r['text']):continue
-        x,y,rw,rh=region_pixels(p,r);cx=x+rw/2;cy=y+rh/2
+        x,y,rw,rh=region_pixels(p,r)
+        if mirror_regions:x=w-x-rw
+        cx=x+rw/2;cy=y+rh/2
         tags=(r'\an5\q0'+f'\\pos({cx:.2f},{cy:.2f})'+f'\\fs{r["size"]*scale:.2f}'+f'\\bord{3*scale:.3f}\\shad{scale:.3f}\\b1'+r'\1c'+ass_color(r['color']))
         events.append(f'Dialogue: 1,{stamp(r["start"],True)},{stamp(r["end"],True)},Default,,{x},{max(0,w-x-rw)},0,,{{{tags}}}{ass_text(r["text"])}')
     Path(path).write_text(header+'\n'.join(events)+'\n',encoding='utf-8-sig')
 
-def video_filter(p,ass_name='subtitles.ass'):
+def video_filter(p,ass_name='subtitles.ass',assets=None,finish=True):
     regions=[]
-    if p.mask['enabled']:regions.append(dict(p.mask,start=0,end=p.duration,strength=20))
+    if p.mask['enabled']:regions.append(dict(p.mask,start=0,end=p.duration,strength=p.mask.get('strength',20)))
     regions.extend(dict(r,fill='#171717') for r in p.screen_regions if r.get('enabled',True) and r['mode']!='none')
     filters=[];source='[0:v]'
     for i,r in enumerate(regions):
         x,y,w,h=region_pixels(p,r);out=f'[mask{i}]'
         enable=f"gte(t,{r['start']:.6f})*lt(t,{r['end']:.6f})"
-        if r['mode']=='blur':
+        if r['mode'] in ('blur','gblur','mosaic'):
             radius=max(1,min(int(r.get('strength',20)),w//4,h//4))
-            filters.append(f"{source}split[base{i}][crop{i}];[crop{i}]crop={w}:{h}:{x}:{y},boxblur={radius}:2[patch{i}];[base{i}][patch{i}]overlay={x}:{y}:enable='{enable}'{out}")
+            patch=f'boxblur={radius}:2'
+            if r['mode']=='gblur':patch=f'gblur=sigma={radius}'
+            elif r['mode']=='mosaic':patch=f'scale={max(1,w//max(2,radius))}:{max(1,h//max(2,radius))}:flags=area,scale={w}:{h}:flags=neighbor'
+            filters.append(f"{source}split[base{i}][crop{i}];[crop{i}]crop={w}:{h}:{x}:{y},{patch}[patch{i}];[base{i}][patch{i}]overlay={x}:{y}:enable='{enable}'{out}")
         else:
             color=r.get('fill',r.get('color','#171717'));ass_color(color)
             filters.append(f"{source}drawbox=x={x}:y={y}:w={w}:h={h}:color={color}@{r.get('opacity',1)}:t=fill:enable='{enable}'{out}")
         source=out
-    filters.append(source+f"subtitles=filename='{ass_name}',setpts=(PTS-STARTPTS)/{p.speed:.9f},pad=ceil(iw/2)*2:ceil(ih/2)*2[v]")
+    effects=effect_settings(p.video_effects)
+    if effects['enabled'] or p.sidebar.get('enabled') or not finish:
+        if effects['enabled'] and effects['flip']:
+            filters.append(source+'hflip[flipped]');source='[flipped]'
+        filters.append(source+"subtitles=filename='regions.ass'[annotated]")
+        source='[annotated]'
+    if effects['enabled'] or p.sidebar.get('enabled'):
+        filters.append(picture_filter(p,source));source='[picture]'
+    artwork,source=artwork_filter(source,assets or [])
+    filters.extend(artwork)
+    filters.append(source+(f"subtitles=filename='{ass_name}',setpts=(PTS-STARTPTS)/{p.speed:.9f}," if finish else "")+"pad=ceil(iw/2)*2:ceil(ih/2)*2[v]")
     return ';'.join(filters)
 
 
@@ -249,7 +315,7 @@ def raw_key(c,p):
     return hashlib.sha256(json.dumps(value,ensure_ascii=False).encode()).hexdigest()[:24]
 
 def signature(p):
-    return hashlib.sha256(json.dumps([p.duration,p.work_speed,p.max_fit,[[c.id,c.start,c.end,raw_key(c,p)] for c in p.cues]],sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(['timing-v3',p.slow_video_for_voice,p.duration,p.work_speed,p.max_fit,[[c.id,c.start,c.end,raw_key(c,p)] for c in p.cues]],sort_keys=True).encode()).hexdigest()
 
 def load_manifest(cache):
     try: return json.loads((Path(cache)/'voices.json').read_text(encoding='utf-8'))
@@ -265,50 +331,6 @@ def voice_ready(p,cache):
     missing=set(m.get('missing',[]))
     # A single-cue preview or a cancelled batch may have filled a formerly missing cue.
     return not any(c.id in missing and (Path(cache)/(raw_key(c,p)+'.mp3')).is_file() for c in p.cues)
-
-class TTSCooldown:
-    def __init__(self):self.lock=threading.Lock();self.until=0.;self.failures=0
-    def fail(self):
-        with self.lock:
-            self.failures+=1;delay=min(60,5*2**min(4,self.failures-1))
-            self.until=max(self.until,time.monotonic()+delay)
-        return delay
-    def success(self):
-        with self.lock:self.failures=0
-    def wait(self,cancel):
-        while True:
-            if cancel.is_set():raise InterruptedError('Đã hủy trong lúc chờ dịch vụ voice.')
-            with self.lock:remaining=self.until-time.monotonic()
-            if remaining<=0:return
-            cancel.wait(min(.2,remaining))
-
-_tts_context=threading.local()
-
-async def fetch_voice(text,voice,rate,path,cancel):
-    import edge_tts
-    last=None;gate=getattr(_tts_context,"gate",None) or TTSCooldown()
-    for attempt in range(3):
-        gate.wait(cancel)
-        if cancel.is_set(): raise InterruptedError('Đã hủy tạo giọng.')
-        task=asyncio.create_task(edge_tts.Communicate(text,voice,rate=f'{rate:+d}%').save(str(path)))
-        try:
-            began=time.monotonic()
-            while not task.done():
-                if cancel.is_set(): raise InterruptedError('Đã hủy tạo giọng.')
-                if time.monotonic()-began>90: raise TimeoutError('Edge TTS phản hồi quá lâu.')
-                await asyncio.sleep(.15)
-            await task
-            gate.success();return
-        except (Exception,asyncio.CancelledError) as e:
-            task.cancel()
-            try: await task
-            except (Exception,asyncio.CancelledError): pass
-            if isinstance(e,InterruptedError): raise
-            last=e
-            delay=gate.fail()
-            report=getattr(_tts_context,'report',None)
-            if report:report(f'Voice lỗi; nghỉ ít nhất {delay}s trước khi thử lại ({attempt+1}/3).')
-    raise RuntimeError(f'Edge TTS không tạo được giọng sau 3 lần thử: {last}')
 
 def fit_voice(raw,out,slot,cancel):
     duration=probe(raw)['duration'];factor=max(1,duration/slot)
@@ -385,13 +407,13 @@ def prepare_voice_row(c,p,cache,cancel,known_duration=None):
     cache=Path(cache);key=raw_key(c,p);raw=cache/(key+'.mp3')
     if not raw.is_file():return None
     dur=known_duration if known_duration is not None else probe(raw)['duration'];slot=(c.end-c.start)/p.work_speed
-    required=max(1,dur/slot);applied=min(required,p.max_fit)
+    required=max(1,dur/slot);applied=1. if p.slow_video_for_voice else min(required,p.max_fit)
     # Overlong speech remains audible in review, including its spill past the subtitle.
-    length=max(slot,dur/applied);ok=required<=p.max_fit+.0001
+    length=max(slot,dur/applied);ok=p.slow_video_for_voice or required<=p.max_fit+.0001
     fitkey=hashlib.sha256(f'partial-v2|{key}|{length:.9f}|{applied:.9f}'.encode()).hexdigest()[:24]
     fitted=cache/(fitkey+'.wav')
     oldfit=cache/(hashlib.sha256(f'{key}|{slot:.9f}'.encode()).hexdigest()[:24]+'.wav')
-    if ok and oldfit.is_file() and oldfit.stat().st_mtime_ns>=raw.stat().st_mtime_ns:fitted=oldfit
+    if not p.slow_video_for_voice and ok and oldfit.is_file() and oldfit.stat().st_mtime_ns>=raw.stat().st_mtime_ns:fitted=oldfit
     if fitted.is_file() and fitted.stat().st_mtime_ns<raw.stat().st_mtime_ns:
         fitted=cache/(hashlib.sha256((fitkey+str(raw.stat().st_mtime_ns)).encode()).hexdigest()[:24]+'.wav')
     if not fitted.is_file():
@@ -432,8 +454,15 @@ def rebuild_voice_track(p,cache,cancel,report,segment=None,include_overlap=False
     atomic_json(metadata_path,metadata)
     if not rows and segment is None:raise ValueError('Chưa có MP3 phù hợp với nội dung/giọng hiện tại. Chọn vùng rồi tạo voice trước.')
     start,end=segment if segment is not None else (0,p.duration)
-    offset=start/p.work_speed
-    total=max(end/p.work_speed,max((r['end'] for r in rows),default=0))-offset
+    timing=voice_timing(p,rows) if p.slow_video_for_voice else None
+    if timing:
+        for row in rows:
+            row.update(timing['rows'][row['id']])
+        offset=map_time(timing,start)
+        total=map_time(timing,end)-offset
+    else:
+        offset=start/p.work_speed
+        total=max(end/p.work_speed,max((r['end'] for r in rows),default=0))-offset
     sig=batch_signature(p,segment) if segment is not None else signature(p)
     if include_overlap:sig=hashlib.sha256((sig+'review'+signature(p)).encode()).hexdigest()
     track=cache/(('batch-voice-' if segment is not None else 'voice-')+sig[:20]+'.wav')
@@ -444,7 +473,7 @@ def rebuild_voice_track(p,cache,cancel,report,segment=None,include_overlap=False
     bad=sum(not r['ok'] for r in rows)
     manifest=dict(signature=sig,schema=2,track=str(track),rows=rows,missing=missing,errors=errors,
         complete=not missing and not bad,created=time.time(),duration=total,segment=segment,
-        long_count=bad,missing_count=len(missing),tail=max(0,total-(end-start)/p.work_speed))
+        long_count=bad,missing_count=len(missing),tail=max(0,total-(end-start)/p.work_speed),timing=timing)
     if not include_overlap:atomic_json(batch_manifest_path(cache,segment) if segment is not None else cache/'voices.json',manifest)
     report(100,f'Nghe được {len(rows)}/{len(spoken)} câu · {bad} câu tràn mốc · {len(missing)} câu chưa có voice')
     return manifest
@@ -452,6 +481,46 @@ def rebuild_voice_track(p,cache,cancel,report,segment=None,include_overlap=False
 def voice_track_path(cache):
     m=load_manifest(cache)
     return Path(m.get('track') or Path(cache)/'voice.wav')
+
+
+def voice_playback_path(source,gain,cache):
+    """Qt output volume stops at 1; boost PCM separately and retain the raw voice."""
+    gain=validate_voice_volume(gain);source=Path(source)
+    if gain<=1:return source
+    stat=source.stat()
+    key=hashlib.sha256(json.dumps([str(source.resolve()),stat.st_size,stat.st_mtime_ns,'gain-v1']).encode()).hexdigest()[:24]
+    return Path(cache)/'voice-gain'/key/(f'{gain:.6f}'+'.wav')
+
+
+def write_voice_audio(source,out,gain,cancel,report):
+    """Apply the same gain/peak protection used by video export, without new TTS."""
+    gain=validate_voice_volume(gain);source=Path(source);out=Path(out)
+    if out.resolve()==source.resolve():raise ValueError('Chọn tệp WAV khác để giữ lại giọng gốc.')
+    out.parent.mkdir(parents=True,exist_ok=True);temp=out.with_suffix('.partial.wav')
+    try:
+        if cancel.is_set():raise InterruptedError('Đã hủy tăng âm; giọng gốc được giữ nguyên.')
+        duration=probe(source)['duration']
+        run([binary('ffmpeg'),'-y','-nostdin','-i',source,'-map','0:a:0','-vn',
+             '-af',voice_volume_filter(gain),'-ar',str(RATE),'-ac','1','-c:a','pcm_s16le',
+             '-progress','pipe:1','-nostats',temp],cancel,
+            progress=lambda n:report(n,f'Chuẩn bị giọng Việt {gain*100:.0f}% · chỉ xử lý âm thanh'),total=duration)
+        if cancel.is_set():raise InterruptedError('Đã hủy tăng âm; giọng gốc được giữ nguyên.')
+        temp.replace(out);report(100,f'Giọng Việt {gain*100:.0f}% đã sẵn sàng')
+        return str(out)
+    finally:temp.unlink(missing_ok=True)
+
+
+def prepare_voice_playback(source,gain,cache,cancel,report):
+    target=voice_playback_path(source,gain,cache)
+    if gain<=1 or target.is_file() and target.stat().st_size>44:return str(target)
+    result=write_voice_audio(source,target,gain,cancel,report)
+    # Keep at most two gain copies per source; long films need not accumulate copies.
+    others=sorted((p for p in target.parent.glob('*.wav') if p!=target and '.partial.' not in p.name),key=lambda p:p.stat().st_mtime_ns,reverse=True)
+    for old in others[1:]:
+        try:old.unlink()
+        except OSError:pass  # A player on Windows can still hold the previous file.
+    return result
+
 
 def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=None,mix=True,parallel_segments=None):
     cache=Path(cache);cache.mkdir(parents=True,exist_ok=True)
@@ -461,51 +530,93 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
         order={id:i for i,id in enumerate(only_ids)};spoken.sort(key=lambda c:order[c.id])
     if not spoken:raise ValueError('Vùng chọn không có câu cần đọc.')
     from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
-    gate=TTSCooldown()
+    capacity=max(1,min(6 if p.tts_retry_mode=='per_cue' else 2,p.tts_workers))
+    gate=TTSCooldown(capacity,spacing=.2,mode='per_cue') if p.tts_retry_mode=='per_cue' else TTSCooldown(capacity)
     errors=[];unique={raw_key(c,p):c for c in spoken};pending=[];done=0;total=len(unique);began=time.monotonic()
+    cue_numbers={c.id:i+1 for i,c in enumerate(p.cues)}
+    key_cues={key:[] for key in unique}
+    for c in spoken:key_cues[raw_key(c,p)].append(c)
+    error_path=cache/'voice-errors.json'
+    try:stored_errors=json.loads(error_path.read_text(encoding='utf-8'))
+    except (OSError,ValueError):stored_errors={}
     for key,c in unique.items():
         if (cache/(key+'.mp3')).is_file() and (cache/(key+'.mp3')).stat().st_size>0:done+=1
         else:pending.append((key,c))
-    report(65*done/max(1,total),f'Dùng lại {done}/{total} MP3 · Tạo tối đa {min(24,p.tts_workers*len(parallel_segments)) if parallel_segments else p.tts_workers} câu cùng lúc')
+    version=edge_client().__version__ if pending else 'không cần kết nối'
+    policy='Thử lại từng câu · tối đa 9 lần/câu' if p.tts_retry_mode=='per_cue' else 'Tự giảm tải / nghỉ chung'
+    report(65*done/max(1,total),f'Edge TTS {version} · Dùng lại {done}/{total} MP3 · {policy} · thử 1 câu trước, tối đa {capacity} kết nối cho toàn bộ lượt')
     def fetch_one(pair):
-        key,c=pair;raw=cache/(key+'.mp3');temp=raw.with_suffix('.partial.mp3')
+        key,c,attempts=pair;raw=cache/(key+'.mp3');temp=raw.with_suffix('.partial.mp3')
         try:
             if cancel.is_set():raise InterruptedError('Đã hủy tạo giọng.')
-            _tts_context.gate=gate;_tts_context.report=lambda msg:report(65*done/max(1,total),msg)
-            gate.wait(cancel)
+            _tts_context.gate=gate;_tts_context.report=lambda msg:report(65*done/max(1,total),f'Câu {cue_numbers[c.id]} ({stamp(c.start)}) · '+msg)
+            _tts_context.defer_retry=True;_tts_context.audio_attempts=attempts
             asyncio.run(fetch_voice(plain(c.text),c.voice or p.voice,p.tts_rate+c.tts_rate,temp,cancel))
-            probe(temp);temp.replace(raw)
-            return c.id,None
-        except InterruptedError:raise
-        except Exception as e:return c.id,str(e)
-        finally:temp.unlink(missing_ok=True)
+            duration=probe(temp)['duration'];temp.replace(raw)
+            return c.id,None,dict(duration=duration)
+        except TTSDeferredRetry as e:return c.id,str(e),dict(retry=e)
+        except (InterruptedError,TTSServiceError):raise
+        except Exception as e:return c.id,str(e),{}
+        finally:
+            temp.unlink(missing_ok=True)
+            _tts_context.__dict__.clear()
     # Shared collector: workers never mutate manifests. Refill each freed slot immediately.
     from collections import deque
+    import heapq
     segments=parallel_segments or [(float('-inf'),float('inf'))]
     queues=[deque() for _ in segments];active=[0]*len(segments)
     for pair in pending:
         group=next((i for i,(a,b) in enumerate(segments) if a<=pair[1].start<b),0)
         queues[group].append(pair)
-    limit=max(1,min(6,p.tts_workers));capacity=min(24,limit*len(segments));cursor=0
-    with ThreadPoolExecutor(max_workers=capacity) as pool:
-        futures={}
-        while any(queues) or futures:
-            if cancel.is_set():
-                for f in futures:f.cancel()
-                raise InterruptedError('Đã hủy; voice đã tạo được giữ.')
-            while len(futures)<capacity:
-                group=next(((cursor+j)%len(queues) for j in range(len(queues)) if queues[(cursor+j)%len(queues)] and active[(cursor+j)%len(queues)]<limit),None)
-                if group is None:break
-                futures[pool.submit(fetch_one,queues[group].popleft())]=group;active[group]+=1;cursor=(group+1)%len(queues)
-            finished,_=wait(futures,return_when=FIRST_COMPLETED)
-            for future in finished:
-                active[futures.pop(future)]-=1
-                id,error=future.result();done+=1
-                if error:
-                    if only_id:raise RuntimeError(error)
-                    errors.append(dict(id=id,error=error))
-                elapsed=round(time.monotonic()-began)
-                report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(errors)} lỗi'+(' · '+error[:65] if error else ''))
+    limit=capacity;cursor=0;retries=[];serial=0
+    metadata_path=cache/'audio-metadata.json'
+    try:metadata=json.loads(metadata_path.read_text(encoding='utf-8'))
+    except (OSError,ValueError):metadata={}
+    try:
+        with ThreadPoolExecutor(max_workers=capacity) as pool:
+            futures={}
+            while any(queues) or retries or futures:
+                if cancel.is_set():
+                    for f in futures:f.cancel()
+                    raise InterruptedError('Đã hủy; voice đã tạo được giữ.')
+                while len(futures)<capacity:
+                    group=next(((cursor+j)%len(queues) for j in range(len(queues)) if queues[(cursor+j)%len(queues)] and active[(cursor+j)%len(queues)]<limit),None)
+                    if group is not None:
+                        key,c=queues[group].popleft();pair=(key,c,0);cursor=(group+1)%len(queues)
+                    elif retries and retries[0][0]<=time.monotonic():
+                        _,_,group,pair=heapq.heappop(retries)
+                    else:break
+                    futures[pool.submit(fetch_one,pair)]=(group,pair[0]);active[group]+=1
+                if not futures:
+                    if retries:cancel.wait(min(.2,max(0,retries[0][0]-time.monotonic())))
+                    continue
+                finished,_=wait(futures,timeout=.2,return_when=FIRST_COMPLETED)
+                for future in finished:
+                    group,key=futures.pop(future);active[group]-=1
+                    try:id,error,details=future.result()
+                    except TTSServiceError as e:
+                        for c in key_cues[key]:stored_errors[c.id]=dict(key=key,error=str(e))
+                        atomic_json(error_path,stored_errors);raise
+                    retry=details.get('retry')
+                    if retry:
+                        serial+=1;heapq.heappush(retries,(time.monotonic()+retry.delay,serial,group,(key,unique[key],retry.attempts)))
+                    else:done+=1
+                    error_changed=False
+                    for c in key_cues[key]:
+                        if error:
+                            stored_errors[c.id]=dict(key=key,error=error);error_changed=True
+                        elif c.id in stored_errors:
+                            del stored_errors[c.id];error_changed=True
+                    if error_changed:atomic_json(error_path,stored_errors)
+                    if details.get('duration'):
+                        raw=cache/(key+'.mp3');stat=raw.stat()
+                        metadata[raw.name]=dict(size=stat.st_size,mtime=stat.st_mtime_ns,duration=details['duration'])
+                    if error and not retry:
+                        if only_id:raise RuntimeError(error)
+                        errors.extend(dict(id=c.id,error=error) for c in key_cues[key])
+                    elapsed=round(time.monotonic()-began)
+                    report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(retries)} câu chờ thử lại · tối đa {gate.limit} kết nối · {len(errors)} lỗi'+(f' · Câu {cue_numbers[id]} ({stamp(unique[key].start)}) · '+error if error else ''))
+    finally:atomic_json(metadata_path,metadata)
     if only_id:
         row=prepare_voice_row(spoken[0],p,cache,cancel)
         if row:
@@ -551,11 +662,36 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
 
 def check_project(p):
     if not p.video or not Path(p.video).is_file(): raise ValueError('Hãy chọn video đang tồn tại.')
-    if not p.cues and not p.screen_regions and not p.music_clean.get('enabled'): raise ValueError('Hãy nhập SRT hoặc thêm vùng chữ / làm mờ trước.')
+    validate_voice_volume(p.voice_volume)
+    effect_settings(p.video_effects)
+    validate_composition(p,files=True)
     for r in p.screen_regions:validate_screen_region(r,p.duration)
     for c in p.cues:
         validate_cue(c)
         if c.end>p.duration+.1: raise ValueError(f'Phụ đề {stamp(c.end)} vượt thời lượng video. Kiểm tra đúng video và SRT.')
+
+def export_encoder(p, preset, cancel, report):
+    """Exercise hardware at the requested size; an encoder listing alone is insufficient."""
+    cpu=['-c:v','libx264','-preset',preset,'-crf','20']
+    if preset!='ultrafast':return 'CPU · libx264',cpu
+    w,h=output_size(p)
+    candidates=[
+        ('NVIDIA NVENC',['-c:v','h264_nvenc','-preset','p1','-rc','vbr','-cq','20','-b:v','0']),
+        ('Intel Quick Sync',['-c:v','h264_qsv','-preset','veryfast','-global_quality','20']),
+        ('AMD AMF',['-c:v','h264_amf','-quality','speed','-rc','cqp','-qp_i','20','-qp_p','20']),
+    ]
+    for name,options in candidates:
+        report(0,'Kiểm tra mã hóa GPU · '+name)
+        try:
+            run([binary('ffmpeg'),'-v','error','-nostdin','-f','lavfi','-i',
+                 f'color=black:size={w}x{h}:rate=30','-frames:v','3','-an']+
+                options+['-pix_fmt','yuv420p','-f','null','-'],cancel,timeout=12)
+            return name,options
+        except (RuntimeError,TimeoutError) as e:
+            report(0,name+' chưa dùng được: '+str(e)[-350:])
+    report(0,'Không có GPU mã hóa khả dụng · dùng CPU ultrafast')
+    return 'CPU · libx264',cpu
+
 
 def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_partial=False,segment=None,review_voice=None):
     check_project(p)
@@ -565,11 +701,24 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
     out=Path(out)
     if Path(p.video).resolve()==out.resolve(): raise ValueError('Không được ghi đè video nguồn.')
     if out.exists(): raise ValueError('Tên tệp đã tồn tại. Hãy chọn tên mới để giữ bản cũ.')
+    if with_voice and p.slow_video_for_voice:
+        manifest=local_voice or load_manifest(cache)
+        if manifest.get('timing'):
+            from .render import export_retimed_video
+            return export_retimed_video(p,cache,out,cancel,report,manifest,preview,segment)
     cache=Path(cache);cache.mkdir(parents=True,exist_ok=True)
     job=cache/('render-'+uuid.uuid4().hex[:10]);job.mkdir()
-    write_ass(job/'subtitles.ass',p)
+    effects=effect_settings(p.video_effects)
+    if effects['enabled'] or p.sidebar.get('enabled'):
+        write_ass(job/'subtitles.ass',p,regions=False,canvas=output_size(p))
+        write_ass(job/'regions.ass',p,cues=False,mirror_regions=bool(effects['enabled'] and effects['flip']))
+    else:
+        write_ass(job/'subtitles.ass',p)
     partial=out.with_name(out.stem+'.partial'+out.suffix)
-    graph=video_filter(p)
+    try:assets=prepare_layers(job,p) if p.overlays else []
+    except Exception:
+        shutil.rmtree(job,ignore_errors=True);raise
+    graph=video_filter(p,assets=assets)
     args=[binary('ffmpeg'),'-y','-nostdin']
     duration=p.output_duration
     if segment is not None:
@@ -586,29 +735,44 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
         if preview is not None: args+=['-ss',f'{max(0,source_start-(segment[0] if local_voice else 0))/p.work_speed:.6f}']
         args+=['-i',str(local_voice['track'] if local_voice else voice_track_path(cache))]
     audios=[];source_audio='0:a'
-    clean=clean_audio_path(p)
+    clean=clean_audio_path(p) if p.has_audio and p.original_gain>0 else None
     if clean:
         if preview is not None:args+=['-ss',f'{source_start:.6f}']
         source_audio=f'{2 if with_voice else 1}:a';args+=['-i',str(clean)]
-    if p.has_audio and p.original_volume>0:
-        graph+=f';[{source_audio}]asetpts=PTS-STARTPTS,{atempo(p.speed)},volume={p.original_volume},apad,atrim=duration={duration:.6f}[original]';audios.append('[original]')
+    if p.has_audio and p.original_gain>0 and not (with_voice and p.mute_original_when_dubbed):
+        graph+=f';[{source_audio}]asetpts=PTS-STARTPTS,{atempo(p.speed)},volume={p.original_gain},apad,atrim=duration={duration:.6f}[original]';audios.append('[original]')
     if with_voice:
-        graph+=f';[1:a]asetpts=PTS-STARTPTS,{atempo(p.final_speed)},volume={p.voice_volume},apad,atrim=duration={duration:.6f}[voice]';audios.append('[voice]')
-    if audios: graph+=';'+''.join(audios)+f'amix=inputs={len(audios)}:duration=longest:normalize=0,alimiter=limit=0.97:level=false:latency=true[a]'
+        graph+=f';[1:a]asetpts=PTS-STARTPTS,{atempo(p.final_speed)},{voice_volume_filter(p.voice_volume)},apad,atrim=duration={duration:.6f}[voice]';audios.append('[voice]')
+    if audios: graph+=';'+''.join(audios)+f'amix=inputs={len(audios)}:duration=longest:normalize=0,{AUDIO_LIMITER}[a]'
     (job/'filters.txt').write_text(graph,encoding='utf-8')
     args+=['-filter_complex_script','filters.txt','-map','[v]']
     if audios: args+=['-map','[a]','-c:a','aac','-b:a','192k']
     else: args+=['-an']
-    args+=['-t',f'{duration:.6f}','-c:v','libx264','-preset','ultrafast' if preview is not None else p.export_preset,
-        '-crf','20','-pix_fmt','yuv420p','-movflags','+faststart','-progress','pipe:1','-nostats',str(partial)]
+    preset='ultrafast' if preview is not None else p.export_preset
+    tail=['-pix_fmt','yuv420p','-movflags','+faststart','-progress','pipe:1','-nostats',str(partial)]
+    args+=['-t',f'{duration:.6f}']
     try:
-        began=time.monotonic()
+        encoder,options=export_encoder(p,preset,cancel,report)
+        began=time.monotonic();last_percent=0
         def export_progress(percent):
+            nonlocal last_percent
+            last_percent=percent
             elapsed=time.monotonic()-began
+            speed=duration*percent/100/max(elapsed,.001)
             eta=elapsed*(100-percent)/percent if percent>0 else 0
-            report(percent,f'Xuất {percent:.1f}% · Đã chạy {stamp(elapsed)} · Còn khoảng {stamp(eta)}')
-        report(0,'Đang xuất video · '+p.export_preset)
-        run(args,cancel,cwd=job,progress=export_progress,total=duration)
+            remaining='Đang ước tính' if elapsed<15 or percent<=0 else 'Còn khoảng '+stamp(eta)
+            report(percent,f'{encoder} · Xuất {percent:.1f}% · {speed:.2f}× · Đã chạy {stamp(elapsed)} · {remaining}')
+        report(0,'Đang xuất video · '+encoder+' · '+preset)
+        try:
+            run(args+options+tail,cancel,cwd=job,progress=export_progress,total=duration)
+        except RuntimeError:
+            # Only retry startup failures, never silently restart a long completed portion.
+            if options[1]=='libx264' or last_percent>0 or time.monotonic()-began>30:raise
+            if cancel.is_set():raise InterruptedError('Đã hủy xuất video.')
+            encoder='CPU · libx264';began=time.monotonic()
+            report(0,'GPU không khởi động được với video này · chuyển sang CPU ultrafast')
+            run(args+['-c:v','libx264','-preset',preset,'-crf','20']+tail,
+                cancel,cwd=job,progress=export_progress,total=duration)
         if out.exists(): raise ValueError('Tệp đích vừa được tạo bởi tiến trình khác; không ghi đè.')
         partial.replace(out);report(100,'Đã xuất video.');return str(out)
     finally:
@@ -713,7 +877,7 @@ def voice_batches(p, minutes=None):
 
 def batch_signature(p,segment):
     a,b=segment
-    content=[p.video,a,b,p.work_speed,p.max_fit,[[c.id,c.start,c.end,raw_key(c,p)] for c in p.cues if a<=c.start<b and plain(c.text)]]
+    content=['timing-v3',p.slow_video_for_voice,p.video,a,b,p.work_speed,p.max_fit,[[c.id,c.start,c.end,raw_key(c,p)] for c in p.cues if a<=c.start<b and plain(c.text)]]
     return hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
 
 def batch_manifest_path(cache,segment):
@@ -897,7 +1061,7 @@ def validate_screen_region(r,duration):
     if not 0<=r['start']<r['end'] or (duration and r['end']>duration+.001):raise ValueError('Thời gian vùng chữ vượt video hoặc không hợp lệ.')
     if not (0<=r['x']<100 and 0<=r['y']<100 and 0<r['w']<=100-r['x']+.001 and 0<r['h']<=100-r['y']+.001):raise ValueError('Vùng chọn nằm ngoài video.')
     if not 8<=r['size']<=200 or not 1<=r['strength']<=40:raise ValueError('Cỡ chữ / độ mờ không hợp lệ.')
-    if r.get('mode') not in ('blur','solid','none'):raise ValueError('Kiểu che không hợp lệ.')
+    if r.get('mode') not in ('blur','gblur','mosaic','solid','none'):raise ValueError('Kiểu che không hợp lệ.')
     if not isinstance(r.get('text'),str) or not isinstance(r.get('id'),str):raise ValueError('Vùng chữ không hợp lệ.')
     ass_color(r['color'])
 
@@ -1100,7 +1264,7 @@ def separate_music_chunk(source,target,models,cancel,python=None):
     finally:session.close()
 
 
-def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separator=None,fresh=False):
+def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separator=None,fresh=False,polish=False):
     """30s resumable blocks with 1s context; source/video/TTS files are never rewritten."""
     if not 0<=retain<=.5:raise ValueError('Mức giữ nền phải từ 0 đến 50%.')
     if not p.has_audio:raise ValueError('Video không có âm thanh gốc.')
@@ -1162,16 +1326,27 @@ def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separato
         temp=original.with_suffix('.partial.flac')
         try:run([binary('ffmpeg'),'-v','error','-y','-nostdin','-ss',str(start),'-i',p.video,'-t',str(end-start),'-vn','-ac',2,'-ar',44100,'-c:a','flac',temp],cancel);temp.replace(original)
         finally:temp.unlink(missing_ok=True)
+    if retain==0:track=dry
     if not track.is_file():
         tmp=track.with_suffix('.partial.flac')
         graph=f'[0:a]volume={1-retain:.6f}[speech];[1:a]volume={retain:.6f}[original];[speech][original]amix=inputs=2:duration=longest:normalize=0,apad,atrim=duration={end-start:.6f},alimiter=limit=0.97:level=false:latency=true[out]'
         try:run([binary('ffmpeg'),'-v','error','-y','-nostdin','-i',dry,'-ss',str(start),'-i',p.video,'-filter_complex',graph,'-map','[out]','-t',str(end-start),'-ac',2,'-ar',44100,'-c:a','flac',tmp],cancel);tmp.replace(track)
         finally:tmp.unlink(missing_ok=True)
+    if polish:
+        polished=track.with_name(track.stem+'-speech-filter-v1.flac')
+        if not polished.is_file():
+            tmp=polished.with_suffix('.partial.flac')
+            try:
+                report(92,'Lọc nhẹ tiếng ù và nhiễu còn lại sau tách…')
+                run([binary('ffmpeg'),'-v','error','-y','-nostdin','-i',track,'-af','highpass=f=70,lowpass=f=12000,afftdn=nr=8:nf=-35','-c:a','flac',tmp],cancel)
+                tmp.replace(polished)
+            finally:tmp.unlink(missing_ok=True)
+        track=polished
     if abs(probe(track)['duration']-(end-start))>.05:
         track.unlink(missing_ok=True);dry.unlink(missing_ok=True)
         raise RuntimeError('Âm đã xử lý lệch thời lượng; chưa áp dụng vào dự án. Bấm xử lý tiếp để ghép lại các đoạn đã xong.')
     report(100,'Đã xử lý xong khoảng âm thanh.')
-    return dict(source_key=key,track=str(track),original=str(original) if segment is not None else '',retain=retain,start=start,end=end,backend=p.music_backend,processing_seconds=processing_time,processed_audio_seconds=processed_seconds)
+    return dict(source_key=key,track=str(track),original=str(original) if segment is not None else '',retain=retain,polish=polish,start=start,end=end,backend=p.music_backend,processing_seconds=processing_time,processed_audio_seconds=processed_seconds)
 
 
 def make_music_preview(p,result,base,cancel,report):
@@ -1187,3 +1362,4 @@ def make_music_preview(p,result,base,cancel,report):
             tmp.replace(target)
         finally:tmp.unlink(missing_ok=True)
     return dict(result,preview=str(target),preview_codec=probe(target)['video_codec'],enabled=True)
+
