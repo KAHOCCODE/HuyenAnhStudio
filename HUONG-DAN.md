@@ -7,11 +7,10 @@
 ```bat
 cd /d E:\HuyenAnhStudio
 git pull --ff-only origin feat/video-frame-effects
-install.cmd
 start.cmd
 ```
 
-Chạy **install.cmd** sau khi kéo mã để cài Edge TTS 7.2.8 cho đợt thử. Chỉ chạy git pull sẽ chưa đổi phiên bản thư viện.
+Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.8 nếu đã có Edge TTS 7.3.1. Nếu app báo thư viện cũ, chạy install.cmd một lần. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
 
 ## Bản 0.3.8: gửi song song và thử lại từng câu
 
@@ -32,7 +31,7 @@ Trong **4 · Sub và giọng → Âm thanh / giọng đọc → Chế độ gử
 
 ## Mới: tạo giọng và xử lý NoAudioReceived
 
-- Bản thử dùng `edge-tts==7.2.8` với hai giọng Nam Minh và Hoài My để kiểm tra lỗi NoAudioReceived.
+- Vẫn dùng hai giọng Nam Minh và Hoài My. Bản này giữ `edge-tts==7.3.1`, là bản phát hành mới nhất đã đối chiếu ngày 02/11/2026; không chuyển sang API trả phí hoặc đổi giọng tự động.
 - Trong chế độ Tự giảm tải, câu lỗi được xếp lại sau các câu chưa thử, tối đa 5 lần/câu. Lỗi dồn dập không còn bị dừng ngay sau 8 phản hồi rỗng: app nghỉ chung 10 giây rồi chỉ 1 câu thử phục hồi. Nếu chưa được, nghỉ 20 rồi 40 giây; sau 3 đợt nghỉ và thử vẫn lỗi mới tạm dừng. Những phản hồi đã đang chạy từ cùng một đợt không bị đếm thành nhiều lần phục hồi thất bại.
 - Thời lượng MP3 mới được ghi vào bộ nhớ đệm sau khi kiểm tra; bước chuẩn bị âm thanh dùng lại kết quả thay vì chạy FFprobe lần hai. Không cần xóa giọng đã tạo.
 - Vào **4 · Sub và giọng → Âm thanh / giọng đọc → Kiểm tra kết nối hai giọng**. App gửi đúng một câu mẫu ngắn cho mỗi giọng, báo có/không có âm thanh, thời gian chờ hoặc loại lỗi; không lưu file thử và không sửa dự án. Kết quả chỉ phản ánh thời điểm kiểm tra.
@@ -110,7 +109,7 @@ Trong **Âm thanh / giọng đọc**, mục **Tốc độ video dựng ×** nằ
 - **Giảm nền / chỉ giữ lời nói…** mở bộ tách AI: nền 0% dùng trực tiếp phần giọng đã tách; mức cao hơn trộn lại một phần nền. Có lọc nhẹ tiếng ù/nhiễu, có thể làm giọng mỏng đi. Hãy nghe lượt thử 30 giây trước khi áp dụng toàn video. Đổi mức nền hoặc lọc dùng lại các đoạn AI đã hoàn tất. Cần cài riêng bằng CAI-GIAM-NHAC.cmd, hoặc CAI-GPU-GTX.cmd cho DirectML. Không có cam kết tách sạch mọi tiếng động.
 - Edge TTS cần mạng, văn bản được gửi tới dịch vụ ngoài và có thể gặp lỗi/giới hạn. Voice dài nhiều giờ cần thời gian và dung lượng; WAV mono 24 kHz dùng khoảng 173 MB/giờ, chưa tính tệp từng câu.
 
-Nếu nhật ký báo **HTTP 403**, app dừng hàng đợi và giữ MP3 đã tạo. Edge TTS 7.2.8 từng gặp lỗi này. Nhật ký ghi phiên bản thư viện khi tạo giọng để tiện đối chiếu. [Edge TTS #490](https://github.com/rany2/edge-tts/issues/490)
+Nếu nhật ký báo **HTTP 403**, dịch vụ đang từ chối kết nối. Bản 0.3.2 dùng **edge-tts 7.3.1** thay cho 7.2.8 và dừng hàng đợi ngay khi gặp lỗi này. Đóng app, cập nhật mã rồi chạy **install.cmd** để cập nhật thư viện; chỉ git pull và mở lại chưa đủ. Giữ nguyên dự án và thư mục voice, sau đó chạy tiếp các lượt đang thiếu. Nhật ký ghi phiên bản Edge TTS khi tạo giọng. Nếu đã dùng 7.3.1 mà vẫn 403, kiểm tra ngày giờ Windows và mạng/dịch vụ, tránh chạy lại hàng nghìn câu liên tiếp. Nguồn sửa lỗi: [Edge TTS #490](https://github.com/rany2/edge-tts/issues/490), [bản 7.3.1](https://github.com/rany2/edge-tts/releases/tag/7.3.1).
 
 ### 5 · Xuất video
 

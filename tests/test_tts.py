@@ -36,7 +36,7 @@ class TTSTests(unittest.TestCase):
     def tearDown(self):context.__dict__.clear()
 
     def test_old_client_requires_dependency_update(self):
-        with patch.object(edge_tts,'__version__','7.2.7'):
+        with patch.object(edge_tts,'__version__','7.2.8'):
             with self.assertRaisesRegex(TTSServiceError,'install.cmd'):edge_client()
 
     def test_one_failed_wave_has_one_delay_and_stale_success_cannot_reopen(self):

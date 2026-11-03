@@ -34,7 +34,7 @@ def edge_client():
     version=getattr(edge_tts,'__version__','0')
     try:parts=tuple(int(n) for n in version.split('.')[:3])
     except ValueError:parts=()
-    if parts<(7,2,8):
+    if parts<(7,3,1):
         raise TTSServiceError(f'Edge TTS {version} đã cũ. Đóng app, chạy install.cmd để cập nhật rồi mở lại. MP3 đã có được giữ nguyên.')
     return edge_tts
 
