@@ -1787,7 +1787,7 @@ class Window(QMainWindow):
             if not parallel.isChecked():text=f'Tuần tự: tối đa {k} câu của lô 1, xong mới tới lô 2. Không có hai lô chạy cùng lúc.'
             else:text=f'Dùng chung: tối đa {k} câu cho tổng {n} lô. Xếp xen kẽ các lô, không nhân số kết nối theo số lượt.'
             detail='Thử lại từng câu tối đa 9 lần; chờ 1,5 giây × số lần lỗi cộng khoảng ngẫu nhiên. Câu lỗi nhường chỗ cho câu mới; không nghỉ hoặc dừng cả lượt chỉ vì NoAudioReceived.' if policy.currentData()=='per_cue' else 'Tối đa 2 kết nối; tăng sau 4 câu thành công. Tối đa 5 lần/câu; lỗi dồn dập nghỉ chung 10, 20, 40 giây và chỉ 1 câu thử phục hồi.'
-            hint.setText(text+'\n'+detail+' HTTP 429 vẫn chờ chung; lỗi xác thực / chứng chỉ dừng để kiểm tra. MP3 đã có được giữ.')
+            hint.setText(text+'\n'+detail+' Chế độ từng câu cũng thử lại HTTP 429 và chờ chung nếu dịch vụ gửi Retry-After. Lỗi xác thực / chứng chỉ dừng để kiểm tra. MP3 đã có được giữ.')
         def policy_changed():
             workers.setMaximum(6 if policy.currentData()=='per_cue' else 2);explain()
         policy.currentIndexChanged.connect(policy_changed)

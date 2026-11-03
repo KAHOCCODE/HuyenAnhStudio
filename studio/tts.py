@@ -24,8 +24,8 @@ class TTSRequestError(RuntimeError):
 
 class TTSDeferredRetry(TTSRequestError):
     """Return the worker to the queue instead of sleeping in it."""
-    def __init__(self,attempts,delay,total=MAX_AUDIO_ATTEMPTS):
-        super().__init__(f'NoAudioReceived · chưa có âm thanh sau {attempts}/{total} lần; thử lại sau {delay:.1f}s ở cuối hàng đợi.')
+    def __init__(self,attempts,delay,total=MAX_AUDIO_ATTEMPTS,reason='NoAudioReceived · chưa có âm thanh'):
+        super().__init__(f'{reason} sau {attempts}/{total} lần; thử lại sau {delay:.1f}s ở cuối hàng đợi.')
         self.attempts=attempts;self.delay=delay
 
 
@@ -67,8 +67,11 @@ class TTSCooldown:
                     return self.generation
             cancel.wait(.05)
 
-    def release(self):
-        with self.lock:self.active-=1
+    def release(self,retry_after=0):
+        with self.lock:
+            self.active-=1
+            if retry_after:
+                self.until=max(self.until,time.monotonic()+retry_after)
 
     def success(self,generation):
         with self.lock:
@@ -231,6 +234,15 @@ async def fetch_voice(text,voice,rate,path,cancel):
             try:reason,fatal,retry_after=failure_reason(error)
             except Exception:
                 gate.release();raise
+            if gate.mode=='per_cue' and getattr(error,'status',None)==429:
+                gate.release(retry_after)
+                if attempt+1==attempts:
+                    raise TTSRequestError(f'Câu vẫn gặp HTTP 429 sau {attempts} lần gửi.')
+                delay=max(retry_delay(attempt,gate.mode),retry_after)
+                if deferred:
+                    raise TTSDeferredRetry(attempt+1,delay,attempts,'HTTP 429')
+                await wait_retry(delay,cancel,gate)
+                continue
             delay=gate.fail(generation,reason,fatal,retry_after)
             service_failures+=1
             if service_failures>=3 or attempt+1==attempts:
