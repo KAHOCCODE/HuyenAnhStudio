@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3.8 — thêm chế độ thử lại từng câu
+# HUYỄN ẢNH Studio 0.3.9 — giữ âm gốc khi lồng tiếng
 
 ## Cập nhật từ nhánh đang dùng
 
@@ -10,7 +10,7 @@ git pull --ff-only origin feat/video-frame-effects
 start.cmd
 ```
 
-Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.8 nếu đã có Edge TTS 7.3.1. Nếu app báo thư viện cũ, chạy install.cmd một lần. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
+Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.9 nếu đã có Edge TTS 7.3.1. Nếu app báo thư viện cũ, chạy install.cmd một lần. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
 
 ## Bản 0.3.8: gửi song song và thử lại từng câu
 
@@ -45,7 +45,7 @@ Trong **4 · Sub và giọng → Âm thanh / giọng đọc → Chế độ gử
 - Nếu mốc SRT chồng nhau, khoảng hình của câu trước được giới hạn bởi mốc bắt đầu câu sau. Các câu có cùng mốc bắt đầu được đọc lần lượt theo thứ tự SRT, có khoảng nghỉ 40 ms.
 - Bấm **Phát** hoặc **Câu quá dài…** để ghép lại giọng đã có sau khi chỉnh. MP3 cũ được dùng lại; không gọi lại Edge TTS chỉ vì đổi chế độ đồng bộ. Timeline và các ô sửa vẫn dùng mốc nguồn; khi lưu SRT chọn **Mốc bản cuối** để lấy mốc sau kéo giãn.
 - Giữ **Tăng tốc bản cuối × = 1,00** nếu muốn giữ nguyên tốc độ giọng đã tạo. Tốc độ đọc thủ công và tốc độ bản cuối vẫn có tác dụng khi bạn chủ động chỉnh. Bỏ chọn làm chậm video để dùng chế độ ép giọng cũ.
-- **Tắt âm gốc khi ghép giọng Việt** mặc định bật, tránh thoại Trung nghe chồng lên tiếng Việt. Nó tắt cả nhạc và hiệu ứng gốc, không tách riêng tiếng nói. Bỏ chọn nếu muốn trộn âm nguồn theo mức âm lượng đang đặt. Tùy chọn tắt âm gốc riêng vốn có vẫn được giữ.
+- **Âm video gốc (%)** quyết định mức âm nguồn khi nghe thử và xuất kèm giọng Việt, mặc định 12%. Mở dự án cũ cũng dùng mức đã lưu thay cho thiết lập tự tắt âm gốc khi ghép voice. Để giữ tiếng nền, đặt mức lớn hơn 0 và bỏ chọn **Tắt âm thanh gốc**. Âm nguồn gồm cả thoại, nhạc và hiệu ứng.
 - **Xem thử 10 giây** kiểm tra kết quả dựng bằng FFmpeg. Đoạn nguồn 10 giây có thể dài hơn sau khi giãn. Xuất toàn video giữ đủ câu đọc cuối; xuất vùng chỉ giữ lời trong đúng biên vùng đã chọn.
 - Bản xuất đồng bộ dùng 30 fps, có thể thấy lặp khung ở đoạn chậm; không có nội suy chuyển động AI. Xử lý lần lượt các đoạn nhỏ, hỗ trợ bộ mã hóa GPU đang có và dùng CPU khi không khả dụng. Cần dung lượng đĩa tạm; ghép cuối không mã hóa lại hình.
 - Chỉnh cắt khung/lật vẫn ở **2 · Hình ảnh → Khung và màu**; chữ/logo và phụ đề Việt giữ đúng chiều. Cắt/lật không bảo đảm tránh Content ID.

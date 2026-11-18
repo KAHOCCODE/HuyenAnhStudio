@@ -100,6 +100,24 @@ class VoiceVolumeTests(unittest.TestCase):
         self.assertEqual(len(samples),RATE*2);self.assertGreater(self.rms(samples),.5)
         self.assertEqual(self.voice.read_bytes(),before)
 
+    def test_ready_voice_preserves_original_volume_in_preview_and_export_summary(self):
+        self.p.has_audio=True
+        self.p.original_muted=False
+        w=self.window()
+        self.assertTrue(w.voice_is_ready)
+        w.vol.setValue(37)
+        w.update_rates()
+        w.refresh_voice_state()
+        self.assertAlmostEqual(w.audio.volume(),.37,places=5)
+        self.assertEqual(w.voice_audio.volume(),1)
+        w.include_voice.setChecked(True)
+        w.refresh_workflow()
+        self.assertIn('âm gốc 37%',w.export_summary.text())
+        w.mute_original.setChecked(True)
+        self.assertEqual(w.audio.volume(),0)
+        w.mute_original.setChecked(False)
+        self.assertAlmostEqual(w.audio.volume(),.37,places=5)
+
     def test_preview_wav_and_full_video_use_same_gain(self):
         self.p.voice_volume=4
         preview=prepare_voice_playback(self.voice,4,self.cache,self.cancel,lambda *a:None)

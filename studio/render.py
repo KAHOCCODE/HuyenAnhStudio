@@ -21,7 +21,7 @@ def export_retimed_video(p,cache,out,cancel,report,manifest,preview=None,segment
     duration=(finish-begin)/p.final_speed
     job=Path(cache)/('retime-'+uuid.uuid4().hex[:10]);job.mkdir(parents=True)
     partial=Path(out).with_name(Path(out).stem+'.partial'+Path(out).suffix)
-    keep_original=p.has_audio and p.original_gain>0 and not p.mute_original_when_dubbed
+    keep_original=p.has_audio and p.original_gain>0
     try:
         # Caption coordinates refer to the output frame; timing refers to the new clock.
         captions=copy.deepcopy(p);captions.cues=[]
@@ -68,8 +68,10 @@ def export_retimed_video(p,cache,out,cancel,report,manifest,preview=None,segment
                 for i,s in enumerate(spans):
                     lo=max(src_a,s['start']);hi=min(src_b,s['end'])
                     speed=(s['end']-s['start'])/(s['out_end']-s['out_start'])*p.final_speed
-                    length=(hi-lo)/speed
-                    graph+=f';[in{i}]atrim=start={lo-src_a:.9f}:end={hi-src_a:.9f},asetpts=PTS-STARTPTS,{atempo(speed)},apad,atrim=duration={length:.9f}[a{i}]'
+                    span_duration=(hi-lo)/speed
+                    # Short gaps can be smaller than atempo's analysis window.
+                    # Pad its input, then trim and timestamp the exact output span.
+                    graph+=f';[in{i}]atrim=start={lo-src_a:.9f}:end={hi-src_a:.9f},asetpts=PTS-STARTPTS,apad=pad_dur=0.1,{atempo(speed)},apad,atrim=duration={span_duration:.9f},asetpts=N/SR/TB[a{i}]'
                 graph+=';'+''.join(f'[a{i}]' for i in range(len(spans)))+f'concat=n={len(spans)}:v=0:a=1[a]'
             script=job/'chunk-filters.txt';script.write_text(graph,encoding='utf-8')
             name=f'part-{index:05d}.mkv';parts.append(name)

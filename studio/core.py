@@ -58,7 +58,6 @@ class Project:
     video_effects: dict = field(default_factory=dict)
     max_fit: float = 1.6
     slow_video_for_voice: bool = True
-    mute_original_when_dubbed: bool = True
     music_clean: dict = field(default_factory=dict)
     music_threads: int = 2
     music_backend: str = "cpu"
@@ -82,7 +81,10 @@ class Project:
     @classmethod
     def from_dict(cls, data):
         if data.get('version') != 1: raise ValueError('Phiên bản dự án chưa được hỗ trợ.')
-        data = dict(data); data['cues'] = [Cue(**c) for c in data.get('cues', [])]
+        data = dict(data)
+        # Older projects enabled this automatically. Use the selected source volume.
+        data.pop('mute_original_when_dubbed', None)
+        data['cues'] = [Cue(**c) for c in data.get('cues', [])]
         p = cls(**data)
         if not (.25 <= p.work_speed <= 2 and .25 <= p.final_speed <= 4): raise ValueError('Tốc độ không hợp lệ.')
         if not 1<=p.tts_workers<=6:raise ValueError('Số luồng TTS phải trong khoảng 1–6.')
@@ -102,7 +104,7 @@ class Project:
         if not isinstance(p.music_clean,dict):raise ValueError('Cấu hình giảm nhạc không hợp lệ.')
         if p.export_preset not in ('ultrafast','veryfast','medium'):raise ValueError('Chế độ xuất không hợp lệ.')
         if not isinstance(p.original_muted,bool):raise ValueError('Trạng thái tắt âm gốc không hợp lệ.')
-        if not isinstance(p.slow_video_for_voice,bool) or not isinstance(p.mute_original_when_dubbed,bool):raise ValueError('Thiết lập đồng bộ voice không hợp lệ.')
+        if not isinstance(p.slow_video_for_voice,bool):raise ValueError('Thiết lập đồng bộ voice không hợp lệ.')
         validate_voice_volume(p.voice_volume)
         effect_settings(p.video_effects)
         validate_composition(p)
@@ -739,7 +741,7 @@ def export_video(p,cache,out,cancel,report,with_voice=True,preview=None,allow_pa
     if clean:
         if preview is not None:args+=['-ss',f'{source_start:.6f}']
         source_audio=f'{2 if with_voice else 1}:a';args+=['-i',str(clean)]
-    if p.has_audio and p.original_gain>0 and not (with_voice and p.mute_original_when_dubbed):
+    if p.has_audio and p.original_gain>0:
         graph+=f';[{source_audio}]asetpts=PTS-STARTPTS,{atempo(p.speed)},volume={p.original_gain},apad,atrim=duration={duration:.6f}[original]';audios.append('[original]')
     if with_voice:
         graph+=f';[1:a]asetpts=PTS-STARTPTS,{atempo(p.final_speed)},{voice_volume_filter(p.voice_volume)},apad,atrim=duration={duration:.6f}[voice]';audios.append('[voice]')

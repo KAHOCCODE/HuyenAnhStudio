@@ -4,6 +4,7 @@ import threading
 import unittest
 import shutil
 import os
+import subprocess
 from pathlib import Path
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 
@@ -40,9 +41,12 @@ class TimingTests(unittest.TestCase):
 
     def test_project_backwards_compatibility_and_framing(self):
         old=Project().to_dict()
-        for key in ('slow_video_for_voice','mute_original_when_dubbed'):old.pop(key)
+        old.pop('slow_video_for_voice')
+        old.update(mute_original_when_dubbed=True,original_volume=.37)
         p=Project.from_dict(old)
         self.assertTrue(p.slow_video_for_voice)
+        self.assertAlmostEqual(p.original_gain,.37)
+        self.assertNotIn('mute_original_when_dubbed',p.to_dict())
         p.video_effects=dict(enabled=True,zoom=2.,x=100.,y=0.,flip=True)
         self.assertEqual(Project.from_dict(p.to_dict()).video_effects,p.video_effects)
 
@@ -69,6 +73,7 @@ class RenderTests(unittest.TestCase):
     def report(self,*args):pass
 
     def test_natural_voice_export_subtitles_and_muted_original(self):
+        self.p.original_muted=True
         m=rebuild_voice_track(self.p,self.cache,self.cancel,self.report)
         rows=m['rows'];self.assertLessEqual(rows[0]['end'],rows[1]['start'])
         self.assertTrue(all(r['applied']==1 for r in rows));self.assertTrue(m['complete'])
@@ -96,12 +101,46 @@ class RenderTests(unittest.TestCase):
         cues=parse_srt(srt.read_text(encoding='utf-8-sig'));self.assertLessEqual(cues[0].end,cues[1].start)
 
     def test_segment_final_speed_and_keep_original(self):
-        self.p.final_speed=1.25;self.p.work_speed=.8;self.p.mute_original_when_dubbed=False
+        self.p.final_speed=1.25;self.p.work_speed=.8
         bounds=(.75,2.5)
         m=rebuild_voice_track(self.p,self.cache,self.cancel,self.report,segment=bounds,include_overlap=True)
         out=self.root/'region.mp4'
         export_video(self.p,self.cache,out,self.cancel,self.report,segment=bounds,review_voice=m,allow_partial=True)
         self.assertAlmostEqual(probe(out)['duration'],m['duration']/1.25,delta=.1)
+
+    def test_original_audio_mix_follows_volume_in_export_and_preview(self):
+        import numpy as np
+
+        def tone_levels(path):
+            pcm=subprocess.check_output([binary('ffmpeg'),'-v','error','-i',str(path),
+                                         '-vn','-ar','24000','-ac','1','-f','f32le','-'])
+            samples=np.frombuffer(pcm,dtype='<f4')[15600:27600]
+            spectrum=np.abs(np.fft.rfft(samples*np.hanning(len(samples))))
+            frequencies=np.fft.rfftfreq(len(samples),1/24000)
+            return [float(np.sqrt(np.sum(spectrum[np.abs(frequencies-tone)<10]**2))/len(samples))
+                    for tone in (220,880)]
+
+        for slow in (True,False):
+            self.p.slow_video_for_voice=slow
+            manifest=rebuild_voice_track(self.p,self.cache,self.cancel,self.report)
+            for preview in (None,.25):
+                levels=[]
+                for gain in (.12,.36):
+                    with self.subTest(slow=slow,preview=preview,gain=gain):
+                        self.p.original_volume=gain
+                        out=self.root/f'mix-{slow}-{preview}-{gain}.mp4'
+                        export_video(self.p,self.cache,out,self.cancel,self.report,
+                                     preview=preview,allow_partial=True)
+                        duration=float(run([binary('ffprobe'),'-v','error','-select_streams','v:0',
+                                            '-show_entries','stream=duration','-of','csv=p=0',out],capture=True))
+                        expected=manifest['duration'] if slow else self.p.output_duration
+                        self.assertAlmostEqual(duration,expected-(preview or 0),delta=.08)
+                        original,voice=tone_levels(out)
+                        self.assertGreater(original,.001)
+                        self.assertGreater(voice,.015)
+                        levels.append((original,voice))
+                self.assertAlmostEqual(levels[1][0]/levels[0][0],3,delta=.15)
+                self.assertAlmostEqual(levels[1][1]/levels[0][1],1,delta=.05)
 
     def test_mode_switch_invalidates_track_without_regenerating_raw(self):
         rebuild_voice_track(self.p,self.cache,self.cancel,self.report)
