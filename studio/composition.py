@@ -6,13 +6,34 @@ from pathlib import Path
 
 SIDEBAR = dict(enabled=False, side='right', width=22., color='#131B2D')
 ICONS = {'heart':'Trái tim', 'star':'Ngôi sao', 'play':'Nút phát', 'music':'Nốt nhạc', 'info':'Thông tin'}
+TEXT_EFFECT_DEFAULTS = dict(fill_mode='solid',gradient_color='#FFFFFF',glow=0.,glow_color='#85FFF0',
+                            depth=0.,depth_color='#172236',outer_outline=0.,outer_color='#101827',
+                            tracking=0.,italic=False)
 TEXT_PRESETS = {
     'clean':dict(color='#FFFFFF',outline_color='#101827',outline=2.,shadow=2.,background=False,accent=False,bold=True),
     'notice':dict(color='#FF303F',outline_color='#101827',outline=0.,shadow=0.,background=False,accent=True,bold=False),
-    'gold':dict(color='#FFE4A0',outline_color='#3A2413',outline=2.,shadow=3.,background=True,accent=True,bold=True),
+    'gold':dict(font='Arial',color='#FFF1B8',outline_color='#FFF3C7',outline=1.,shadow=5.,background=False,accent=False,bold=True,
+                fill_mode='metal',gradient_color='#B96B15',outer_outline=3.,outer_color='#50301C',depth=5.,depth_color='#704011',size=70.),
     'label':dict(color='#FFFFFF',outline_color='#101827',outline=0.,shadow=0.,background=True,accent=True,bold=True),
-    'neon':dict(color='#85FFF0',outline_color='#243660',outline=3.,shadow=4.,background=False,accent=False,bold=True),
+    'neon':dict(font='Arial',color='#E7FFFB',outline_color='#64FFE0',outline=1.5,shadow=0.,background=False,accent=False,bold=True,
+                glow=22.,glow_color='#27E5C3',outer_outline=1.,outer_color='#168E9B',size=64.),
+    'cinema':dict(color='#FFF7DD',outline_color='#5A3F25',outline=1.,shadow=6.,background=False,accent=False,bold=True,
+                  font='Georgia',fill_mode='gradient',gradient_color='#C7A579',tracking=2.,size=64.),
+    'comic':dict(font='Arial',color='#FFF7AC',outline_color='#352041',outline=4.,shadow=4.,background=False,accent=False,bold=True,
+                 fill_mode='gradient',gradient_color='#FF9F32',outer_outline=2.,outer_color='#FFFFFF',depth=8.,depth_color='#AB244D',italic=True,size=68.),
+    'ice':dict(font='Arial',color='#FFFFFF',outline_color='#E5FCFF',outline=1.,shadow=4.,background=False,accent=False,bold=True,
+               fill_mode='gradient',gradient_color='#4CBEEB',outer_outline=3.,outer_color='#1D528A',depth=4.,depth_color='#163B68',size=68.),
+    'rose':dict(font='Arial',color='#FFF1FA',outline_color='#FFFFFF',outline=1.5,shadow=3.,background=False,accent=False,bold=True,
+                fill_mode='gradient',gradient_color='#F270BA',outer_outline=2.,outer_color='#8C3673',glow=14.,glow_color='#F478CF',size=64.),
 }
+TEXT_PRESET_LABELS = {'clean':'Trắng có viền','notice':'Thông báo vạch đỏ','gold':'Vàng kim nổi khối',
+                      'label':'Nhãn nền tối','neon':'Neon xanh ngọc','cinema':'Tiêu đề điện ảnh',
+                      'comic':'Truyện tranh','ice':'Pha lê xanh','rose':'Hồng ánh sáng'}
+
+
+def text_preset(key):
+    """Reset every effect when changing styles, including effects absent in old files."""
+    return dict(TEXT_EFFECT_DEFAULTS,**TEXT_PRESETS[key])
 SUBTITLE_PRESETS = [
     ('Trắng · viền đen',dict(color='#FFFFFF',outline_color='#101010',outline=3.,shadow=2.,box=False,bold=True)),
     ('Vàng · viền đen',dict(color='#FFE16A',outline_color='#151019',outline=3.,shadow=2.,box=False,bold=True)),
@@ -43,7 +64,8 @@ def new_layer(kind='text',duration=1,preset='clean'):
     v=dict(id=uuid.uuid4().hex[:12],kind=kind,name='Chữ mới',enabled=True,start=0.,end=max(.001,duration),
            x=4.,y=5.,w=40.,h=16.,text='Tên kênh',image='',icon='heart',font='Arial',size=40.,
            align='left',opacity=1.,background_color='#162338',background_opacity=.8,
-           accent_color='#FF303F',radius=14.,**TEXT_PRESETS[preset])
+           accent_color='#FF303F',radius=14.)
+    v.update(text_preset(preset))
     if preset=='notice':v.update(name='Thông báo có vạch dọc',text='Phim được làm bởi AI\nKhán giả trên 18+',w=38.,h=12.,size=32.)
     if kind=='image':v.update(name='Logo kênh',text='',w=14.,h=18.)
     if kind=='icon':v.update(name='Biểu tượng',text='',w=8.,h=12.,color='#FF527C')
@@ -66,6 +88,13 @@ def validate_layer(v,duration):
     for key in ('opacity','background_opacity'):number(v.get(key),0,1)
     number(v.get('size'),8,240);number(v.get('outline'),0,12);number(v.get('shadow'),0,16);number(v.get('radius'),0,60)
     for key in ('color','outline_color','background_color','accent_color'):color(v.get(key))
+    if v.get('fill_mode','solid') not in ('solid','gradient','metal'):
+        raise ValueError('Kiểu tô chữ không hợp lệ.')
+    if not isinstance(v.get('italic',False),bool):raise ValueError('Kiểu chữ nghiêng không hợp lệ.')
+    for key,high in [('glow',36),('depth',16),('outer_outline',12),('tracking',12)]:
+        number(v.get(key,TEXT_EFFECT_DEFAULTS[key]),0,high)
+    for key in ('gradient_color','glow_color','depth_color','outer_color'):
+        color(v.get(key,TEXT_EFFECT_DEFAULTS[key]))
 
 
 def validate_composition(p,files=False):
@@ -100,6 +129,53 @@ def subtitle_area(p,w,h):
 
 def layer_rect(v,w,h):
     return (w*v['x']/100,h*v['y']/100,w*v['w']/100,h*v['h']/100)
+
+
+def paint_text(painter,path,v,scale):
+    """Use the same vector effects for live preview and rasterized export artwork."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor,QLinearGradient,QPen
+    glow=v.get('glow',0.)
+    outer=v.get('outer_outline',0.)
+    outline=v['outline']
+    if glow:
+        for step in range(8,0,-1):
+            halo=QColor(v.get('glow_color',TEXT_EFFECT_DEFAULTS['glow_color']))
+            halo.setAlphaF(.025+.07*(1-step/8))
+            width=2*(outline+outer+glow*step/8)*scale
+            painter.strokePath(path,QPen(halo,width,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin))
+    if v['shadow']:
+        painter.save()
+        painter.translate(v['shadow']*scale,v['shadow']*scale)
+        painter.fillPath(path,QColor(0,0,0,150))
+        painter.restore()
+    depth=v.get('depth',0.)
+    if depth:
+        for step in range(math.ceil(depth),0,-1):
+            offset=min(step,depth)*scale
+            painter.save()
+            painter.translate(offset,offset)
+            painter.fillPath(path,QColor(v.get('depth_color',TEXT_EFFECT_DEFAULTS['depth_color'])))
+            painter.restore()
+    if outer:
+        painter.strokePath(path,QPen(QColor(v.get('outer_color',TEXT_EFFECT_DEFAULTS['outer_color'])),
+                                     2*(outline+outer)*scale,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin))
+    if outline:
+        painter.strokePath(path,QPen(QColor(v['outline_color']),2*outline*scale,
+                                     Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin))
+    fill=QColor(v['color'])
+    mode=v.get('fill_mode','solid')
+    if mode!='solid' and not path.isEmpty():
+        bounds=path.boundingRect()
+        gradient=QLinearGradient(bounds.left(),bounds.top(),bounds.left(),bounds.bottom())
+        bottom=QColor(v.get('gradient_color',TEXT_EFFECT_DEFAULTS['gradient_color']))
+        if mode=='metal':
+            stops=[(0,fill.lighter(120)),(.3,fill),(.48,fill.lighter(140)),
+                   (.53,bottom),(.8,fill),(1,bottom.lighter(120))]
+        else:stops=[(0,fill),(1,bottom)]
+        for position,color_value in stops:gradient.setColorAt(position,color_value)
+        fill=gradient
+    painter.fillPath(path,fill)
 
 
 def draw_layer(painter,v,w,h):
@@ -137,7 +213,12 @@ def draw_layer(painter,v,w,h):
             painter.drawEllipse(QRectF(3,3,94,94));painter.setPen(QPen(QColor(v['background_color']),10));painter.drawLine(QPointF(50,43),QPointF(50,77));painter.drawPoint(QPointF(50,25))
     else:
         pad=(14 if v['background'] or v['accent'] else 2)*scale
+        if any(v.get(key,0) for key in ('glow','depth','outer_outline')):
+            pad=max(pad,(2+v['outline']+v.get('outer_outline',0)+v.get('glow',0)
+                         +v.get('depth',0)+v['shadow'])*scale)
         box=rect.adjusted(pad,pad,-pad,-pad);font=QFont(v['font']);font.setPixelSize(max(1,round(v['size']*scale)));font.setBold(v['bold'])
+        font.setItalic(v.get('italic',False))
+        if v.get('tracking',0):font.setLetterSpacing(QFont.AbsoluteSpacing,v['tracking']*scale)
         y=box.y();path=QPainterPath()
         for paragraph in v['text'].split('\n'):
             layout=QTextLayout(paragraph,font);option=QTextOption();option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere);layout.setTextOption(option);layout.beginLayout()
@@ -153,11 +234,7 @@ def draw_layer(painter,v,w,h):
                         g=raw.pathForGlyph(glyph);g.translate(x+point.x(),y+point.y());path.addPath(g)
                 y+=line.height()*1.12
             layout.endLayout()
-        if v['shadow']:
-            painter.save();painter.translate(v['shadow']*scale,v['shadow']*scale);painter.fillPath(path,QColor(0,0,0,150));painter.restore()
-        if v['outline']:
-            painter.setPen(QPen(QColor(v['outline_color']),2*v['outline']*scale,Qt.SolidLine,Qt.RoundCap,Qt.RoundJoin));painter.setBrush(Qt.NoBrush);painter.drawPath(path)
-        painter.fillPath(path,QColor(v['color']))
+        paint_text(painter,path,v,scale)
     painter.restore()
 
 

@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3.9 — giữ âm gốc khi lồng tiếng
+# HUYỄN ẢNH Studio 0.3.10 — mẫu chữ ánh kim, neon và nổi khối
 
 ## Cập nhật từ nhánh đang dùng
 
@@ -10,7 +10,7 @@ git pull --ff-only origin feat/video-frame-effects
 start.cmd
 ```
 
-Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.9 nếu đã có Edge TTS 7.3.1. Nếu app báo thư viện cũ, chạy install.cmd một lần. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
+Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.10 nếu đã có Edge TTS 7.3.1. Nếu app báo thư viện cũ, chạy install.cmd một lần. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
 
 ## Bản 0.3.8: gửi song song và thử lại từng câu
 
@@ -82,9 +82,9 @@ Bấm **Chọn / thay video…**. Tên, kích thước và thời lượng ngu�
 
 ### 3 · Chữ / logo
 
-Thêm chữ, ảnh logo PNG/JPG/WebP/BMP hoặc biểu tượng. Có mẫu thông báo hai dòng với vạch đỏ, cùng mẫu chữ viền trắng, vàng, nhãn nền tối và xanh ngọc. Biểu tượng có trái tim, ngôi sao, nút phát, nốt nhạc và thông tin.
+Thêm chữ, ảnh logo PNG/JPG/WebP/BMP hoặc biểu tượng. Chọn lớp chữ để xem sáu mẫu có hình minh họa trong bảng chỉnh sửa, gồm **Vàng kim nổi khối**, **Neon xanh ngọc**, **Truyện tranh**, **Tiêu đề điện ảnh**, **Pha lê xanh** và **Hồng ánh sáng**. Danh sách Mẫu trang trí còn có chữ trắng viền, nhãn nền tối và thông báo vạch đỏ. Đổi mẫu áp dụng hiệu ứng ngay trên nội dung và vị trí của lớp đang chọn. Biểu tượng có trái tim, ngôi sao, nút phát, nốt nhạc và thông tin.
 
-Chọn một lớp trong danh sách rồi chỉnh nội dung, phông/cỡ/màu phù hợp loại lớp. Logo không hiện các thông số chữ; biểu tượng không hiện phần nhập văn bản. Kéo lớp trên preview để di chuyển, kéo góc dưới phải để đổi kích thước. **Vị trí, thời gian và trang trí** chứa tọa độ, mốc đầu/cuối theo giây nguồn, viền, bóng, nền, bo góc và vạch dọc. Tăng rộng/cao nếu chữ bị cắt trong khung.
+Chọn một lớp trong danh sách rồi chỉnh nội dung, phông/cỡ/màu phù hợp loại lớp. Logo không hiện các thông số chữ; biểu tượng không hiện phần nhập văn bản. Kéo lớp trên preview để di chuyển, kéo góc dưới phải để đổi kích thước. **Vị trí, thời gian và trang trí** chứa tọa độ, mốc đầu/cuối theo giây nguồn, viền kép, bóng, quầng sáng, độ nổi khối, giãn chữ, chữ nghiêng, nền, bo góc và vạch dọc. Mục Tô chữ có một màu, chuyển màu và ánh kim. Các hiệu ứng dùng chung cho xem trước và xuất video. Khi tự chỉnh khác mẫu, bộ chọn hiện Tùy chỉnh. Tăng rộng/cao nếu chữ bị cắt trong khung.
 
 Có thể nhân đôi, xóa hoặc đổi thứ tự lớp. Lớp cuối danh sách được vẽ trên các lớp trước; phụ đề SRT được ghép sau các lớp trang trí. Ảnh logo được tham chiếu bằng đường dẫn gốc; khi chuyển dự án sang máy khác, chọn lại ảnh nếu đường dẫn không còn đúng.
 
