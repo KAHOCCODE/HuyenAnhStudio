@@ -1078,10 +1078,21 @@ def recognize_screen_text(path):
 
 MUSIC_MODEL='UVR-MDX-NET-Inst_HQ_3.onnx'
 MUSIC_ENGINE_VERSION='audio-separator-0.47.0-mdx-v1'
+SEPARATION_STEMS={'speech':'Vocals','background':'Instrumental'}
+
+
+def separation_stem(mode):
+    if not isinstance(mode,str) or mode not in SEPARATION_STEMS:
+        raise ValueError('Mục tiêu tách âm thanh không hợp lệ.')
+    return SEPARATION_STEMS[mode]
+
+
 MUSIC_WORKER=r'''
 import os,sys,json,pathlib,shutil
 out,models,model,ffmpeg_dir,threads=sys.argv[1:6]
 backend=sys.argv[6] if len(sys.argv)>6 else 'cpu'
+stem=sys.argv[7] if len(sys.argv)>7 else 'Vocals'
+if stem not in ('Vocals','Instrumental'):raise ValueError('Invalid separation stem')
 os.environ['OMP_NUM_THREADS']=threads;os.environ['MKL_NUM_THREADS']=threads;os.environ['CUDA_VISIBLE_DEVICES']=''
 channel=sys.stdout;sys.stdout=sys.stderr
 def emit(data):channel.write(json.dumps(data,ensure_ascii=True)+'\n');channel.flush()
@@ -1089,6 +1100,7 @@ os.environ['PATH']=ffmpeg_dir+os.pathsep+os.environ.get('PATH','')
 import torch
 torch.set_num_threads(int(threads));torch.set_num_interop_threads(1)
 import onnxruntime as ort
+ort.disable_telemetry_events()
 def nvidia_adapter():
     import ctypes as c,uuid
     if os.name!='nt':raise RuntimeError('DirectML cần Windows 10/11.')
@@ -1118,7 +1130,7 @@ def nvidia_adapter():
 original=ort.InferenceSession
 sessions=[];gpu_checked=False;adapter_name='CPU';adapter_index=None
 if backend=='dml':
-    if 'DmlExecutionProvider' not in ort.get_available_providers():raise RuntimeError('Chưa có DirectML. Chạy CAI-GPU-GTX.cmd trong bản cập nhật.')
+    if 'DmlExecutionProvider' not in ort.get_available_providers():raise RuntimeError('Chưa có DirectML. Chọn CPU hoặc dùng môi trường tách GPU đã cài.')
     adapter_index,adapter_name=nvidia_adapter()
 def bounded(*args,**kwargs):
     opts=kwargs.get('sess_options') or ort.SessionOptions()
@@ -1152,16 +1164,17 @@ class AtomicSeparator(Separator):
             super().download_file_if_not_exists(url,str(temporary))
             temporary.replace(target)
         finally:temporary.unlink(missing_ok=True)
-sep=AtomicSeparator(model_file_dir=models,output_dir=out,output_format='WAV',output_single_stem='Vocals',normalization_threshold=1.0,amplification_threshold=0.0,use_soundfile=True,mdx_params={'hop_length':1024,'segment_size':128,'overlap':.25,'batch_size':1,'enable_denoise':False})
+sep=AtomicSeparator(model_file_dir=models,output_dir=out,output_format='WAV',output_single_stem=stem,normalization_threshold=1.0,amplification_threshold=0.0,use_soundfile=True,mdx_params={'hop_length':1024,'segment_size':128,'overlap':.25,'batch_size':1,'enable_denoise':False})
 sep.load_model(model_filename=model)
 if backend=='dml' and not sessions:raise RuntimeError('Mô hình không tạo phiên ONNX GPU. Đã dừng để tránh chạy nhầm CPU.')
-emit({'event':'ready','device':adapter_name,'backend':backend})
+emit({'event':'ready','device':adapter_name,'backend':backend,'stem':stem})
 for line in sys.stdin:
     request=json.loads(line)
     if request.get('stop'):break
     try:
-        files=sep.separate(request['source'],custom_output_names={'Vocals':'speech'})
-        if len(files)!=1:raise RuntimeError('Expected one speech output')
+        name='background' if stem=='Instrumental' else 'speech'
+        files=sep.separate(request['source'],custom_output_names={stem:name})
+        if len(files)!=1:raise RuntimeError('Expected one '+stem+' output')
         p=pathlib.Path(files[0]);p=p if p.is_absolute() else pathlib.Path(out)/p
         gpu_nodes=0;cpu_nodes=0
         if backend=='dml' and not gpu_checked:
@@ -1183,22 +1196,26 @@ for line in sys.stdin:
 def music_python(backend='cpu'):
     configured=os.environ.get('HUYENANH_MUSIC_GPU_PYTHON' if backend=='dml' else 'HUYENANH_MUSIC_PYTHON')
     path=Path(configured) if configured else ROOT/('.music-dml-venv' if backend=='dml' else '.music-venv')/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
-    if not path.is_file() and backend=='dml':raise RuntimeError('Chưa cài GPU. Đóng app và chạy CAI-GPU-GTX.cmd một lần.')
-    if not path.is_file():raise RuntimeError('Chưa cài bộ giảm nhạc. Đóng app và chạy CAI-GIAM-NHAC.cmd trong gói cập nhật một lần, rồi mở lại app.')
+    if not path.is_file() and backend=='dml':raise RuntimeError('Chưa cài bộ tách DirectML. Chọn CPU để dùng bộ cài CAI-TACH-AM-THANH.cmd.')
+    if not path.is_file():raise RuntimeError('Chưa cài bộ tách âm thanh. Đóng app và chạy CAI-TACH-AM-THANH.cmd một lần, rồi mở lại app.')
     return path
 
 
-def music_source_key(p):
+def music_source_key(p,mode='speech'):
+    separation_stem(mode)
     source=Path(p.video);stat=source.stat()
-    return hashlib.sha256(json.dumps([str(source.resolve()),stat.st_size,stat.st_mtime_ns,MUSIC_MODEL,MUSIC_ENGINE_VERSION],ensure_ascii=False).encode()).hexdigest()[:24]
+    identity=[str(source.resolve()),stat.st_size,stat.st_mtime_ns,MUSIC_MODEL,MUSIC_ENGINE_VERSION]
+    # Preserve existing speech caches, keeping instrumental chunks in their own namespace.
+    if mode!='speech':identity.append(mode)
+    return hashlib.sha256(json.dumps(identity,ensure_ascii=False).encode()).hexdigest()[:24]
 
 
 def clean_audio_path(p):
     state=p.music_clean
     if not state.get('enabled'):return None
-    if state.get('source_key')!=music_source_key(p):raise ValueError('Bản giảm nhạc không khớp video nguồn. Mở Giảm nhạc để xử lý lại hoặc dùng âm gốc.')
+    if state.get('source_key')!=music_source_key(p,state.get('mode','speech')):raise ValueError('Âm đã tách không khớp video nguồn. Mở Tách âm thanh để xử lý lại hoặc dùng âm gốc.')
     path=Path(state.get('track',''))
-    if not path.is_file() or not path.stat().st_size:raise ValueError('Không tìm thấy âm thanh đã giảm nhạc. Mở Giảm nhạc để ghép lại phần đã xử lý.')
+    if not path.is_file() or not path.stat().st_size:raise ValueError('Không tìm thấy âm thanh đã tách. Mở Tách âm thanh để ghép lại phần đã xử lý.')
     return path
 
 
@@ -1210,12 +1227,13 @@ def music_chunk_valid(path,duration):
 
 class MusicSession:
     """One model per task, bounded audio chunks, cancellable JSON pipe protocol."""
-    def __init__(self,models,root,threads=2,python=None,worker_code=None,backend="cpu"):
+    def __init__(self,models,root,threads=2,python=None,worker_code=None,backend="cpu",mode='speech'):
         import tempfile,queue
+        stem=separation_stem(mode)
         self.out=Path(tempfile.mkdtemp(prefix='ai-session-',dir=root))
         self.events=queue.Queue();self.errors=tempfile.TemporaryFile();self.proc=None;self.reader=None
         try:
-            self.proc=subprocess.Popen([str(python or music_python(backend)),'-u','-c',worker_code or MUSIC_WORKER,str(self.out),str(models),MUSIC_MODEL,str(Path(binary('ffmpeg')).resolve().parent),str(threads),backend],
+            self.proc=subprocess.Popen([str(python or music_python(backend)),'-u','-c',worker_code or MUSIC_WORKER,str(self.out),str(models),MUSIC_MODEL,str(Path(binary('ffmpeg')).resolve().parent),str(threads),backend,stem],
                 stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=self.errors,text=True,encoding='utf-8',bufsize=1,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
             def read():
                 try:
@@ -1229,18 +1247,18 @@ class MusicSession:
         import queue
         began=time.monotonic();last=-2
         while True:
-            if cancel.is_set():raise InterruptedError('Đã hủy giảm nhạc; giữ lại các đoạn đã xong.')
+            if cancel.is_set():raise InterruptedError('Đã hủy tách âm thanh; giữ lại các đoạn đã xong.')
             elapsed=time.monotonic()-began
             if heartbeat and elapsed-last>=2:heartbeat(elapsed);last=elapsed
             try:message=self.events.get(timeout=.1)
             except queue.Empty:continue
             if message.get('event')==event:return message
-            if message.get('event')=='error':raise RuntimeError('AI giảm nhạc: '+message.get('message','Lỗi không xác định'))
+            if message.get('event')=='error':raise RuntimeError('AI tách âm thanh: '+message.get('message','Lỗi không xác định'))
             if message.get('event')=='exit':
                 self.errors.seek(0,2);size=self.errors.tell();self.errors.seek(max(0,size-5000))
                 raise RuntimeError('Bộ AI đã dừng: '+self.errors.read().decode('utf-8',errors='replace'))
     def separate(self,source,target,cancel,heartbeat=None):
-        if cancel.is_set():raise InterruptedError('Đã hủy giảm nhạc.')
+        if cancel.is_set():raise InterruptedError('Đã hủy tách âm thanh.')
         try:self.proc.stdin.write(json.dumps({'source':str(source),'target':str(target)},ensure_ascii=True)+'\n');self.proc.stdin.flush()
         except (BrokenPipeError,OSError):raise RuntimeError('Bộ AI đã ngắt; bấm xử lý tiếp để dùng lại các đoạn đã xong.')
         result=self.wait('done',cancel,heartbeat)
@@ -1266,13 +1284,18 @@ def separate_music_chunk(source,target,models,cancel,python=None):
     finally:session.close()
 
 
-def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separator=None,fresh=False,polish=False):
+def build_music_reduction(p,cache,cancel,report,retain=None,segment=None,separator=None,fresh=False,polish=False,mode='speech'):
     """30s resumable blocks with 1s context; source/video/TTS files are never rewritten."""
+    separation_stem(mode)
+    if retain is None:retain=0. if mode=='background' else .12
     if not 0<=retain<=.5:raise ValueError('Mức giữ nền phải từ 0 đến 50%.')
+    if mode=='background' and (retain or polish):
+        raise ValueError('Giữ nhạc / hiệu ứng dùng phần nền đã tách, mức trộn lại âm gốc bằng 0 và tắt lọc lời nói.')
     if not p.has_audio:raise ValueError('Video không có âm thanh gốc.')
     start,end=segment if segment is not None else (0.,p.duration)
     if not 0<=start<end<=p.duration+.001:raise ValueError('Khoảng xử lý giảm nhạc không hợp lệ.')
-    key=music_source_key(p);root=Path(cache)/'music-clean'/key;root.mkdir(parents=True,exist_ok=True)
+    key=music_source_key(p,mode);root=Path(cache)/'music-clean'/key;root.mkdir(parents=True,exist_ok=True)
+    action='Tách giọng nhân vật' if mode=='background' else 'Giảm nhạc'
     models=Path(cache).parent.parent/'music-models';models.mkdir(parents=True,exist_ok=True)
     if fresh:
         root=root/('test-'+uuid.uuid4().hex);root.mkdir()
@@ -1284,10 +1307,10 @@ def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separato
     session=None;remaining=sum(b-a for a,b,_ in missing);processed_seconds=0;processing_time=0;ratio=None
     try:
         for i,(a,b,path) in enumerate(plans):
-            if cancel.is_set():raise InterruptedError('Đã dừng giảm nhạc; các đoạn xong được giữ để chạy tiếp.')
-            if music_chunk_valid(path,b-a):report(80*(i+1)/len(plans),f'Dùng lại đoạn giảm nhạc {i+1}/{len(plans)}');continue
+            if cancel.is_set():raise InterruptedError('Đã dừng tách âm thanh; các đoạn xong được giữ để chạy tiếp.')
+            if music_chunk_valid(path,b-a):report(80*(i+1)/len(plans),f'Dùng lại đoạn âm đã tách {i+1}/{len(plans)}');continue
             chunk_began=time.monotonic()
-            label=f'Giảm nhạc đoạn {i+1}/{len(plans)} · {stamp(a)}–{stamp(b)}'
+            label=f'{action} · đoạn {i+1}/{len(plans)} · {stamp(a)}–{stamp(b)}'
             def heartbeat(elapsed):
                 eta=f' · Còn khoảng {stamp(max(0,remaining*ratio-(time.monotonic()-chunk_began)))} + ghép âm' if ratio is not None else ' · Đang đo tốc độ'
                 report(80*i/len(plans),label+f' · Đoạn này {stamp(time.monotonic()-chunk_began)}'+eta)
@@ -1298,7 +1321,7 @@ def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separato
                 if separator is None:
                     if session is None:
                         report(80*i/len(plans),'Khởi động AI một lần cho lượt chạy này…')
-                        session=MusicSession(models,root,p.music_threads,backend=p.music_backend)
+                        session=MusicSession(models,root,p.music_threads,backend=p.music_backend,mode=mode)
                         ready=session.wait('ready',cancel,lambda elapsed:report(80*i/len(plans),f'Khởi động / tải mô hình AI · {stamp(elapsed)} · Chưa tính thời gian xử lý'))
                         report(80*i/len(plans),'Bộ xử lý: '+str((ready or {}).get('device',p.music_backend)))
                         chunk_began=time.monotonic()
@@ -1308,7 +1331,7 @@ def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separato
                 # Context is discarded, never concatenated twice. A tiny edge fade avoids clicks.
                 length=b-a
                 run([binary('ffmpeg'),'-v','error','-y','-nostdin','-i',estimated,'-af',f'atrim=start={a-pad_start:.6f},asetpts=PTS-STARTPTS,apad,atrim=duration={length:.6f},afade=t=in:d=0.003,afade=t=out:st={max(0,length-.003):.6f}:d=0.003','-ac',2,'-ar',44100,'-c:a','pcm_s16le',tmp],cancel)
-                if not music_chunk_valid(tmp,length):raise RuntimeError('Đoạn giảm nhạc sai thời lượng. Đoạn chưa được lưu; có thể thử lại.')
+                if not music_chunk_valid(tmp,length):raise RuntimeError('Đoạn âm đã tách sai thời lượng. Đoạn chưa được lưu; có thể thử lại.')
                 tmp.replace(path)
                 measured=time.monotonic()-chunk_began
                 processed_seconds+=b-a;processing_time+=measured;remaining-=b-a
@@ -1318,12 +1341,13 @@ def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separato
                 for file in (source,estimated,tmp):file.unlink(missing_ok=True)
     finally:
         if session is not None:session.close()
-    tag=f'{round(start*1000)}-{round(end*1000)}';dry=root/('speech-'+tag+'.flac');listing=root/('concat-'+tag+'.txt')
+    tag=f'{round(start*1000)}-{round(end*1000)}'
+    dry=root/(('background-' if mode=='background' else 'speech-')+tag+'.flac');listing=root/('concat-'+tag+'.txt')
     if not dry.is_file():
         listing.write_text(''.join("file '"+path.name+"'\n" for _,_,path in plans),encoding='utf-8');tmp=dry.with_suffix('.partial.flac')
         try:run([binary('ffmpeg'),'-v','error','-y','-nostdin','-f','concat','-safe','0','-i',listing,'-c:a','flac',tmp],cancel);tmp.replace(dry)
         finally:tmp.unlink(missing_ok=True)
-    report(85,'Ghép âm thanh đã giảm nhạc…');track=root/(f'clean-{tag}-{round(retain*1000)}.flac');original=root/('original-'+tag+'.flac')
+    report(85,'Ghép âm thanh đã tách…');track=root/(f'clean-{tag}-{round(retain*1000)}.flac');original=root/('original-'+tag+'.flac')
     if segment is not None and not original.is_file():
         temp=original.with_suffix('.partial.flac')
         try:run([binary('ffmpeg'),'-v','error','-y','-nostdin','-ss',str(start),'-i',p.video,'-t',str(end-start),'-vn','-ac',2,'-ar',44100,'-c:a','flac',temp],cancel);temp.replace(original)
@@ -1348,7 +1372,7 @@ def build_music_reduction(p,cache,cancel,report,retain=.12,segment=None,separato
         track.unlink(missing_ok=True);dry.unlink(missing_ok=True)
         raise RuntimeError('Âm đã xử lý lệch thời lượng; chưa áp dụng vào dự án. Bấm xử lý tiếp để ghép lại các đoạn đã xong.')
     report(100,'Đã xử lý xong khoảng âm thanh.')
-    return dict(source_key=key,track=str(track),original=str(original) if segment is not None else '',retain=retain,polish=polish,start=start,end=end,backend=p.music_backend,processing_seconds=processing_time,processed_audio_seconds=processed_seconds)
+    return dict(source_key=key,mode=mode,track=str(track),original=str(original) if segment is not None else '',retain=retain,polish=polish,start=start,end=end,backend=p.music_backend,processing_seconds=processing_time,processed_audio_seconds=processed_seconds)
 
 
 def make_music_preview(p,result,base,cancel,report):
@@ -1358,9 +1382,9 @@ def make_music_preview(p,result,base,cancel,report):
     if not target.is_file():
         tmp=target.with_suffix('.partial.mkv')
         try:
-            report(0,'Gắn âm đã giảm nhạc vào bản xem — sao chép hình, không mã hóa lại…')
-            run([binary('ffmpeg'),'-y','-nostdin','-i',base,'-i',result['track'],'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','192k','-t',str(p.duration),'-progress','pipe:1','-nostats',tmp],cancel,progress=lambda n:report(n,'Đang chuẩn bị bản xem giảm nhạc…'),total=p.duration)
-            if abs(probe(tmp)['duration']-p.duration)>.2:raise RuntimeError('Bản xem giảm nhạc sai thời lượng.')
+            report(0,'Gắn âm đã tách vào bản xem — sao chép hình, không mã hóa lại…')
+            run([binary('ffmpeg'),'-y','-nostdin','-i',base,'-i',result['track'],'-map','0:v:0','-map','1:a:0','-c:v','copy','-c:a','aac','-b:a','192k','-t',str(p.duration),'-progress','pipe:1','-nostats',tmp],cancel,progress=lambda n:report(n,'Đang chuẩn bị bản xem âm đã tách…'),total=p.duration)
+            if abs(probe(tmp)['duration']-p.duration)>.2:raise RuntimeError('Bản xem âm đã tách sai thời lượng.')
             tmp.replace(target)
         finally:tmp.unlink(missing_ok=True)
     return dict(result,preview=str(target),preview_codec=probe(target)['video_codec'],enabled=True)

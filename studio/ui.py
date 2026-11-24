@@ -645,7 +645,9 @@ class Window(QMainWindow):
         self.vvol=self.spin(0,VOICE_VOLUME_MAX*100,100,0,self.voice_volume_changed);self.vvol.setSingleStep(25);self.vvol.setKeyboardTracking(False)
         self.vvol.setToolTip('100%: giữ mức gốc. 200%: khuếch đại 2 lần; tối đa 600%. Có giới hạn đỉnh khi tăng âm. Dùng khi nghe, xuất video và lưu WAV; dùng lại giọng đã tạo.')
         vf.addRow('Giọng Việt (%)',self.vvol)
-        vf.addRow(self.button('Giảm nền / chỉ giữ lời nói…',self.music_dialog))
+        self.remove_dialogue_btn=self.button('Xóa giọng nhân vật / giữ hiệu ứng…',lambda:self.music_dialog(mode='background'))
+        vf.addRow(self.remove_dialogue_btn)
+        vf.addRow(self.button('Giữ lời nói / giảm nhạc…',lambda:self.music_dialog(mode='speech')))
         self.tts_mode=QComboBox();self.tts_mode.addItem('Tự giảm tải · tối đa 2','adaptive');self.tts_mode.addItem('Thử lại từng câu · tối đa 6','per_cue');vf.addRow('Chế độ gửi',self.tts_mode)
         self.tts_mode.setToolTip('Tự giảm tải: 5 lượt/câu và nghỉ chung khi lỗi dồn dập. Thử lại từng câu: 9 lượt/câu, chờ tăng dần riêng câu lỗi, không dừng cả lượt vì NoAudioReceived.')
         self.workers=self.spin(1,2,2,0,self.settings_changed);vf.addRow('Số câu tạo cùng lúc',self.workers);self.tts_mode.currentIndexChanged.connect(self.tts_mode_changed)
@@ -654,7 +656,7 @@ class Window(QMainWindow):
         self.slow_video=QCheckBox('Câu dài: làm chậm video, giữ giọng');self.slow_video.toggled.connect(self.settings_changed);vf.addRow(self.slow_video)
         delete=self.button('Dọn giọng đọc đã tạo ▾',lambda:None);menu=QMenu(delete);menu.addAction('Xóa giọng các câu chọn…',self.delete_selected_voice);menu.addAction('Xóa toàn bộ giọng dự án…',self.delete_all_voice);delete.setMenu(menu);vf.addRow(delete)
         from .workflow_ui import fold_rows
-        fold_rows(voicebox,{self.work,self.work_hint,self.voice,self.rate,self.voice_scope,self.generate_btn,self.voice_summary,tools,self.vol,self.mute_original,self.vvol,self.tts_mode,self.workers},'Tách âm nền & thiết lập nâng cao')
+        fold_rows(voicebox,{self.work,self.work_hint,self.voice,self.rate,self.voice_scope,self.generate_btn,self.voice_summary,tools,self.vol,self.mute_original,self.vvol,self.tts_mode,self.workers,self.remove_dialogue_btn},'Tách âm nền & thiết lập nâng cao')
         pr.addWidget(voicebox);pr.addStretch()
         exportbox=QGroupBox('Xuất video');ef=QFormLayout(exportbox)
         self.export_mode=QComboBox();self.export_mode.addItem('Nhanh · tệp lớn hơn','veryfast');self.export_mode.addItem('Nhanh nhất · tự dùng GPU','ultrafast');self.export_mode.addItem('Nén gọn · chậm','medium')
@@ -722,7 +724,7 @@ class Window(QMainWindow):
         self.play_button.setEnabled(has_video and not self.busy);self.timeline_toggle.setEnabled(has_video)
         w,h=output_size(self.p);audio='tắt tiếng gốc' if self.p.original_gain==0 else f'âm gốc {self.p.original_volume*100:.0f}%'
         if not self.p.has_audio:audio='video không có tiếng gốc'
-        if self.p.has_audio and self.p.music_clean.get('enabled') and self.p.original_gain:audio+=' · đã giảm nền'
+        if self.p.has_audio and self.p.music_clean.get('enabled') and self.p.original_gain:audio+=' · '+('đã tách giọng gốc' if self.p.music_clean.get('mode')=='background' else 'đã giảm nền')
         self.preview.update_subtitle_box()
         duration=self.work_time(self.p.duration)/self.p.final_speed if self.include_voice.isChecked() else self.p.output_duration
         self.export_summary.setText(f'Kích thước: {w} × {h}\nNguồn: {stamp(self.p.duration)}\nBản xuất: {stamp(duration)} · tốc độ {self.p.speed:.3f}×\nÂm thanh: {audio}'+(f' + giọng Việt {self.p.voice_volume*100:.0f}%' if self.include_voice.isChecked() else ''))
@@ -764,7 +766,7 @@ class Window(QMainWindow):
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
         self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.10'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.11'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -1000,7 +1002,7 @@ class Window(QMainWindow):
             self.player.setVideoSink(None if self.cpu_mode else self.video_sink)
             self.player.setSource(QUrl.fromLocalFile(str(full)))
             if self.cpu_mode:self.cpu_seek(0)
-            self.status.setText('Đang dùng âm gốc đã giảm nhạc · Voice Việt giữ riêng');return
+            self.status.setText('Đang dùng '+('nhạc / hiệu ứng đã tách giọng' if self.p.music_clean.get('mode')=='background' else 'âm đã giảm nhạc')+' · Voice Việt giữ riêng');return
         full=self.available_full_proxy()
         if full:
             self.player.setVideoSink(self.video_sink);self.player.setSource(QUrl.fromLocalFile(str(full)))
@@ -1015,53 +1017,103 @@ class Window(QMainWindow):
     def music_preview_path(self):
         clean_audio_path(self.p)
         path=Path(self.p.music_clean.get('preview',''))
-        if not path.is_file():raise ValueError('Thiếu bản xem giảm nhạc. Mở Giảm nhạc và bấm xử lý / tiếp tục để ghép lại.')
+        if not path.is_file():raise ValueError('Thiếu bản xem âm đã tách. Mở Tách âm thanh và bấm xử lý / tiếp tục để ghép lại.')
         return path
-    def music_dialog(self,checked=False,sample=None,speech_only=False):
+    def music_dialog(self,checked=False,sample=None,speech_only=False,mode=None):
         if not self.guard():return
-        if not self.p.video or not self.p.has_audio:self.error('Hãy mở video có âm thanh trước.');return
+        if not self.p.video or not self.p.has_audio:
+            self.error('Hãy mở video có âm thanh trước.');return
         self.player.pause();self.voice_player.pause();self.sample_player.stop();self._sample_voice=False
-        dialog=QDialog(self);dialog.setWindowTitle('Giữ lời nói / giảm nhạc');dialog.resize(570,360)
+        current=sample or self.p.music_clean
+        selected_mode=mode or ('speech' if speech_only else current.get('mode','speech'))
+        separation_stem(selected_mode)
+        dialog=QDialog(self);dialog.setWindowTitle('Tách âm thanh gốc');dialog.resize(590,460)
         layout=QVBoxLayout(dialog)
-        note=QLabel('AI ưu tiên giữ tiếng nói và giảm nhạc. Một số hiệu ứng có thể mất.\nGiữ một phần âm nền giúp còn hiệu ứng nhưng cũng còn nhạc.\nXử lý một lần; dùng lại khi phát và xuất, không phụ thuộc các lô voice Việt.')
-        note.setWordWrap(True);layout.addWidget(note)
-        quality_note=QLabel('Chỉ giữ lời nói đặt nền 0%. AI có thể còn sót nhạc hoặc làm mất một phần lời; hãy nghe đoạn thử trước. Đây không phải chế độ tắt toàn bộ âm gốc.');quality_note.setWordWrap(True);layout.addWidget(quality_note)
-        polish=QCheckBox('Lọc nhẹ tiếng ù / nhiễu sau tách (có thể làm giọng mỏng hơn)');polish.setChecked((sample or self.p.music_clean).get('polish',False));layout.addWidget(polish)
-        state=QLabel('Hiện đang dùng: '+('âm đã giảm nhạc' if self.p.music_clean.get('enabled') else 'âm gốc'));layout.addWidget(state)
-        form=QFormLayout();retain=QSpinBox();retain.setRange(0,50);retain.setSuffix(' %');retain.setValue(0 if speech_only else round((sample or self.p.music_clean).get('retain',.12)*100));form.addRow('Giữ lại âm nền',retain);audio_mode=QComboBox();audio_mode.addItems(['Chỉ giữ lời nói · nền 0%','Giữ lời + một phần nền']);audio_mode.setCurrentIndex(0 if retain.value()==0 else 1);audio_mode.currentIndexChanged.connect(lambda i:retain.setValue(0 if i==0 else 12));form.addRow('Mục tiêu',audio_mode);threads=QSpinBox();threads.setRange(1,8);threads.setValue(self.p.music_threads);form.addRow('Luồng CPU giảm nhạc',threads);backend=QComboBox();backend.addItem('CPU · ONNX','cpu');backend.addItem('GPU NVIDIA · DirectML (thử nghiệm)','dml');backend.setCurrentIndex(1 if self.p.music_backend=='dml' else 0);form.addRow('Bộ xử lý',backend);layout.addLayout(form)
-        tip=QLabel('0%: giảm nhạc mạnh hơn. 10–20%: giữ thêm nền và hiệu ứng.\nAI chỉ khởi động một lần cho mỗi lượt; giữ nguyên các đoạn đã xong.\nGPU: chạy CAI-GPU-GTX.cmd trước, rồi thử 30 giây.\nLuồng CPU: mặc định 2; thử 4 nếu máy còn dư CPU. Nhiều hơn chưa chắc nhanh hơn.\nThanh Âm gốc (%) điều chỉnh âm lượng kết quả khi xem / xuất.')
+        form=QFormLayout()
+        target=QComboBox();target.setObjectName('separation_mode')
+        target.addItem('Xóa giọng nhân vật · giữ nhạc / hiệu ứng','background')
+        target.addItem('Giữ lời nói · giảm nhạc','speech')
+        target.setCurrentIndex(target.findData(selected_mode));form.addRow('Mục tiêu',target)
+        layout.addLayout(form)
+        note=QLabel();note.setWordWrap(True);layout.addWidget(note)
+        quality=QLabel('AI có thể còn sót thoại hoặc làm mất một phần hiệu ứng, nhất là tiếng giống giọng người. Hãy nghe đoạn thử trước khi áp dụng toàn phim.')
+        quality.setWordWrap(True);layout.addWidget(quality)
+        options=QFormLayout()
+        retain=QSpinBox();retain.setObjectName('separation_retain')
+        retain.setRange(0,50);retain.setSuffix(' %')
+        retain.setValue(0 if speech_only else round(current.get('retain',.12)*100))
+        options.addRow('Trộn lại âm gốc',retain)
+        polish=QCheckBox('Lọc nhẹ tiếng ù / nhiễu sau tách lời nói')
+        polish.setObjectName('separation_polish');polish.setChecked(current.get('polish',False))
+        options.addRow(polish)
+        threads=QSpinBox();threads.setRange(1,8);threads.setValue(self.p.music_threads)
+        options.addRow('Luồng CPU',threads)
+        backend=QComboBox();backend.addItem('CPU · ONNX','cpu')
+        backend.addItem('GPU NVIDIA · DirectML (thử nghiệm)','dml')
+        backend.setCurrentIndex(backend.findData(self.p.music_backend));options.addRow('Bộ xử lý',backend)
+        layout.addLayout(options)
+        def update_target():
+            background=target.currentData()=='background'
+            options.setRowVisible(retain,not background)
+            options.setRowVisible(polish,not background)
+            note.setText('Lấy phần nhạc và hiệu ứng sau khi tách giọng gốc, rồi ghép cùng voice Việt. Âm đã tách được dùng khi xem thử và xuất video.'
+                         if background else 'Lấy phần lời nói sau khi tách nhạc. 0% dùng phần lời đã tách; mức cao hơn trộn thêm một phần âm gốc.')
+        target.currentIndexChanged.connect(update_target);update_target()
+        active=self.p.music_clean
+        active_name='nhạc / hiệu ứng đã tách giọng' if active.get('mode')=='background' else 'lời nói đã giảm nhạc'
+        layout.addWidget(QLabel('Hiện đang dùng: '+(active_name if active.get('enabled') else 'âm gốc')))
+        tip=QLabel('Lần đầu cài bộ AI bằng CAI-TACH-AM-THANH.cmd. Mô hình được tải khi xử lý lần đầu.\n'
+                   'CPU mặc định 2 luồng; mỗi đoạn 30 giây có thể dừng và chạy tiếp.\n'
+                   'Âm video gốc (%) điều chỉnh mức nhạc / hiệu ứng khi ghép cùng voice Việt.')
         tip.setWordWrap(True);layout.addWidget(tip)
         def begin(full):
-            value=retain.value()/100;enhance=polish.isChecked();count=threads.value();device=backend.currentData();position=self.source_position();dialog.accept()
-            if count!=self.p.music_threads:self.push_undo();self.p.music_threads=count;self.changed(False)
-            if device!=self.p.music_backend:self.push_undo();self.p.music_backend=device;self.changed(False)
+            chosen=target.currentData()
+            value=0. if chosen=='background' else retain.value()/100
+            enhance=chosen=='speech' and polish.isChecked()
+            count=threads.value();device=backend.currentData();position=self.source_position()
+            dialog.accept()
+            if (count,device)!=(self.p.music_threads,self.p.music_backend):
+                self.push_undo();self.p.music_threads=count;self.p.music_backend=device;self.changed(False)
             if not self.save():return
             project=copy.deepcopy(self.p);cache=self.cache;base=self.available_full_proxy() or project.video
-            start=min(max(0,position/1000),max(0,project.duration-30));segment=None if full else (start,min(project.duration,start+30))
+            start=min(max(0,position/1000),max(0,project.duration-30))
+            segment=None if full else (start,min(project.duration,start+30))
             def work(cancel,report):
-                result=build_music_reduction(project,cache,cancel,report,value,segment,fresh=not full,polish=enhance)
+                result=build_music_reduction(project,cache,cancel,report,value,segment,
+                                             fresh=not full,polish=enhance,mode=chosen)
                 return make_music_preview(project,result,base,cancel,report) if full else result
             def done(result):
                 if full:
-                    self.push_undo();self.p.music_clean=result;self.load_preview_source();self._load_batch_resume=(position,False);self.changed();self.save()
-                    self.status.setText('Đã áp dụng giảm nhạc toàn video. Bấm Phát để nghe cùng voice Việt.')
+                    self.push_undo();self.p.music_clean=result
+                    if result.get('mode')=='background':
+                        self.p.original_muted=False
+                        if self.p.original_volume<=0:self.p.original_volume=.12
+                    self.load_controls();self.load_preview_source();self._load_batch_resume=(position,False)
+                    self.changed();self.save()
+                    self.status.setText('Đã áp dụng âm đã tách toàn video. Bấm Phát để nghe cùng voice Việt.')
                 else:QTimer.singleShot(0,lambda:self.music_dialog(sample=result))
-            self.start_job(work,done,'Giảm nhạc toàn video' if full else 'Thử giảm nhạc 30 giây')
+            label='Tách giọng nhân vật' if chosen=='background' else 'Giảm nhạc'
+            self.start_job(work,done,label+' toàn video' if full else 'Thử '+label.lower()+' 30 giây')
         layout.addWidget(self.button('Xử lý thử 30 giây tại con trỏ',lambda:begin(False)))
         if sample:
-            layout.addWidget(QLabel(f"Lượt thử {sample.get('backend','cpu').upper()}: {sample.get('processing_seconds',0):.1f} giây xử lý (không gồm nạp mô hình)."))
-            layout.addWidget(QLabel('Đoạn thử: '+stamp(sample['start'])+' – '+stamp(sample['end'])+' · Giữ nền '+str(round(sample['retain']*100))+'%'))
+            label='giữ nhạc / hiệu ứng' if sample.get('mode')=='background' else 'giữ lời nói'
+            layout.addWidget(QLabel(f"Lượt thử {label} · {sample.get('backend','cpu').upper()}: {sample.get('processing_seconds',0):.1f}s xử lý."))
+            layout.addWidget(QLabel('Đoạn thử: '+stamp(sample['start'])+' – '+stamp(sample['end'])))
             row=QHBoxLayout()
             def listen(path):
-                self.sample_player.stop();self.sample_player.setPlaybackRate(1);self.sample_audio.setVolume(1);self.sample_player.setSource(QUrl.fromLocalFile(path));self.sample_player.play()
+                self.sample_player.stop();self.sample_player.setPlaybackRate(1);self.sample_audio.setVolume(1)
+                self.sample_player.setSource(QUrl.fromLocalFile(path));self.sample_player.play()
             row.addWidget(self.button('Nghe âm gốc',lambda:listen(sample['original'])))
-            row.addWidget(self.button('Nghe sau giảm nhạc',lambda:listen(sample['track'])))
+            row.addWidget(self.button('Nghe sau tách',lambda:listen(sample['track'])))
             row.addWidget(self.button('Dừng nghe',self.sample_player.stop));layout.addLayout(row)
         layout.addWidget(self.button('Xử lý / tiếp tục toàn video',lambda:begin(True),True))
         def restore():
-            position=self.source_position();self.push_undo();self.p.music_clean['enabled']=False;dialog.accept();self.load_preview_source();self._load_batch_resume=(position,False);self.changed();self.save()
-        restore_btn=self.button('Dùng lại âm gốc',restore);restore_btn.setEnabled(bool(self.p.music_clean.get('enabled')));layout.addWidget(restore_btn)
-        layout.addWidget(self.button('Đóng',dialog.reject));dialog.finished.connect(lambda _:self.sample_player.stop());dialog.exec()
+            position=self.source_position();self.push_undo();self.p.music_clean['enabled']=False
+            dialog.accept();self.load_preview_source();self._load_batch_resume=(position,False);self.changed();self.save()
+        restore_btn=self.button('Dùng lại âm gốc',restore)
+        restore_btn.setEnabled(bool(self.p.music_clean.get('enabled')));layout.addWidget(restore_btn)
+        layout.addWidget(self.button('Đóng',dialog.reject))
+        dialog.finished.connect(lambda _:self.sample_player.stop());dialog.exec();dialog.deleteLater()
     def close_cpu(self):
         if hasattr(self,'cpu_seek_timer'):self.cpu_seek_timer.stop()
         if self.cpu_decoder:self.cpu_decoder.close()

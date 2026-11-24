@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3.10 — mẫu chữ ánh kim, neon và nổi khối
+# HUYỄN ẢNH Studio 0.3.11 — tách giọng nhân vật, giữ nhạc và hiệu ứng
 
 ## Cập nhật từ nhánh đang dùng
 
@@ -10,7 +10,18 @@ git pull --ff-only origin feat/video-frame-effects
 start.cmd
 ```
 
-Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.10 nếu đã có Edge TTS 7.3.1. Nếu app báo thư viện cũ, chạy install.cmd một lần. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
+Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.11 nếu đã có Edge TTS 7.3.1. Nếu app báo thư viện cũ, chạy install.cmd một lần. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
+
+## Bản 0.3.11: xóa giọng nhân vật, giữ nhạc / hiệu ứng
+
+Chạy **CAI-TACH-AM-THANH.cmd** một lần để cài bộ tách CPU. Có thể dùng lại môi trường `.music-venv` đã cài trước đó. Lần xử lý đầu cần mạng để tải mô hình; các lượt sau dùng lại mô hình trên máy.
+
+Vào **4 · Sub và giọng → Âm thanh / giọng đọc → Xóa giọng nhân vật / giữ hiệu ứng…**. Chọn **Xóa giọng nhân vật · giữ nhạc / hiệu ứng**, bấm **Xử lý thử 30 giây tại con trỏ** rồi so sánh **Nghe âm gốc** và **Nghe sau tách**. Khi phù hợp, chọn **Xử lý / tiếp tục toàn video** để dùng kết quả khi phát và xuất kèm giọng Việt. Chỉnh **Âm video gốc (%)** để đặt mức nhạc / hiệu ứng. Khi áp dụng kết quả này, app bật lại âm nguồn; mức đang chọn được dùng, hoặc 12% nếu trước đó bằng 0.
+
+- Mô hình lấy phần nền Instrumental, không trộn lại âm nguồn có lời. Mỗi khối 30 giây có thêm ngữ cảnh ở hai đầu; dừng rồi chạy tiếp dùng lại các khối đã hoàn tất. Bộ nhớ đệm của phần nền và phần lời được lưu riêng.
+- Nhạc, hiệu ứng và thoại trong phim thường chồng nhau. AI có thể còn sót giọng, làm âm nền bị mỏng hoặc mất một phần hiệu ứng giống giọng người. Hãy nghe đoạn thử để quyết định trước khi xử lý toàn phim.
+- Bộ xử lý CPU mặc định 2 luồng. Tách âm thanh thực hiện trước bước đồng bộ giọng; khi kéo dài hình để khớp voice Việt, âm nền đã tách đi theo thời gian hình mới.
+- Nút **Dùng lại âm gốc** khôi phục nguồn nghe / xuất. Tùy chọn **Giữ lời nói · giảm nhạc** tiếp tục dùng bộ tách cũ. Các MP3 voice Việt được dùng lại khi chuyển chế độ tách.
 
 ## Bản 0.3.8: gửi song song và thử lại từng câu
 
@@ -106,7 +117,7 @@ Trong **Âm thanh / giọng đọc**, mục **Tốc độ video dựng ×** nằ
 - Khi bị giới hạn **429** ở chế độ Tự giảm tải, hoặc khi gặp lỗi mạng hay lỗi dịch vụ khác, các câu cùng chờ 5 rồi 10 giây (hoặc thời gian dịch vụ yêu cầu), chỉ 1 câu thử phục hồi; sau 3 lần chưa phục hồi thì dừng. Trong chế độ Tự giảm tải, với **NoAudioReceived dồn dập**, dùng các đợt nghỉ 10, 20, 40 giây và thử lần lượt bằng 1 câu trước khi dừng. Lỗi chứng chỉ HTTPS vẫn dừng ngay, không tắt xác minh TLS. Có thể hủy khi đang nghỉ. MP3 đã thành công và lỗi của các câu đã xử lý được giữ để chạy tiếp.
 - Âm video gốc giảm cả tiếng nói, nhạc và hiệu ứng. **Tắt âm thanh gốc** bỏ toàn bộ tiếng này khi xem/xuất và giữ mức âm lượng cũ để khôi phục khi bỏ chọn. **Giọng Việt (%)** trong **4 · Sub và giọng → Âm thanh / giọng đọc** chỉnh riêng từ **0 đến 600%**: 100% giữ mức giọng đã tạo, 200% khuếch đại 2 lần, 300% là 3 lần. Mức trên 100% có bộ giới hạn đỉnh để hạn chế vỡ tiếng; độ lớn cảm nhận còn phụ thuộc bản giọng và phần âm gốc đang trộn.
 - Mức giọng Việt được dùng khi nghe trên timeline, nghe từng câu, xem thử 10 giây, xuất toàn bộ video và lưu giọng WAV. Đổi âm lượng dùng lại MP3/giọng đã ghép, không cần gọi lại TTS. Lần đầu nghe mức trên 100%, app chuẩn bị một bản âm thanh tăng âm, giữ nguyên video và giọng gốc. Video dài cần chờ xử lý phần âm thanh này; cùng mức và cùng nguồn được dùng lại, giữ tối đa hai bản tăng âm cho mỗi nguồn khi có thể xóa tệp cũ. Giảm về 100% hoặc thấp hơn dùng trực tiếp giọng gốc. Khi đang nghe thử một câu, đổi mức sẽ dừng câu đó; bấm nghe câu lại để dùng mức mới. Bản xuất và WAV luôn áp dụng mức đang chọn trực tiếp.
-- **Giảm nền / chỉ giữ lời nói…** mở bộ tách AI: nền 0% dùng trực tiếp phần giọng đã tách; mức cao hơn trộn lại một phần nền. Có lọc nhẹ tiếng ù/nhiễu, có thể làm giọng mỏng đi. Hãy nghe lượt thử 30 giây trước khi áp dụng toàn video. Đổi mức nền hoặc lọc dùng lại các đoạn AI đã hoàn tất. Cần cài riêng bằng CAI-GIAM-NHAC.cmd, hoặc CAI-GPU-GTX.cmd cho DirectML. Không có cam kết tách sạch mọi tiếng động.
+- **Xóa giọng nhân vật / giữ hiệu ứng…** lấy phần nhạc và hiệu ứng để lồng tiếng Việt. **Giữ lời nói / giảm nhạc…** lấy phần lời, có mức trộn lại âm gốc và lọc nhiễu nhẹ. Cả hai có đoạn nghe thử 30 giây, xử lý tiếp từ khối đã hoàn tất và nút dùng lại âm gốc. Cài bộ CPU bằng **CAI-TACH-AM-THANH.cmd**; tên bộ cài cũ **CAI-GIAM-NHAC.cmd** cũng mở bộ cài này.
 - Edge TTS cần mạng, văn bản được gửi tới dịch vụ ngoài và có thể gặp lỗi/giới hạn. Voice dài nhiều giờ cần thời gian và dung lượng; WAV mono 24 kHz dùng khoảng 173 MB/giờ, chưa tính tệp từng câu.
 
 Nếu nhật ký báo **HTTP 403**, dịch vụ đang từ chối kết nối. Bản 0.3.2 dùng **edge-tts 7.3.1** thay cho 7.2.8 và dừng hàng đợi ngay khi gặp lỗi này. Đóng app, cập nhật mã rồi chạy **install.cmd** để cập nhật thư viện; chỉ git pull và mở lại chưa đủ. Giữ nguyên dự án và thư mục voice, sau đó chạy tiếp các lượt đang thiếu. Nhật ký ghi phiên bản Edge TTS khi tạo giọng. Nếu đã dùng 7.3.1 mà vẫn 403, kiểm tra ngày giờ Windows và mạng/dịch vụ, tránh chạy lại hàng nghìn câu liên tiếp. Nguồn sửa lỗi: [Edge TTS #490](https://github.com/rany2/edge-tts/issues/490), [bản 7.3.1](https://github.com/rany2/edge-tts/releases/tag/7.3.1).
