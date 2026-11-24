@@ -199,12 +199,17 @@ async def save_attempt(client,text,voice,rate,path,cancel,gate):
         if not complete:path.unlink(missing_ok=True)
 
 
+def speech_text(text):
+    # Keep source subtitles unchanged, including their original line breaks.
+    text=' '.join(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufeff\u200b\u2060]',' ',unicodedata.normalize('NFC',text)).split())
+    if not any(c.isalnum() for c in text):raise TTSRequestError('Câu không có chữ hoặc số để đọc; giữ nguyên phụ đề để rà soát.')
+    return text
+
+
 async def fetch_voice(text,voice,rate,path,cancel):
     from edge_tts.exceptions import NoAudioReceived
     client=edge_client();gate=getattr(context,'gate',None) or TTSCooldown()
-    # Clean only characters the speech protocol cannot read; keep the SRT unchanged.
-    text=' '.join(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufeff\u200b\u2060]',' ',unicodedata.normalize('NFC',text)).split())
-    if not any(c.isalnum() for c in text):raise TTSRequestError('Câu không có chữ hoặc số để đọc; giữ nguyên phụ đề để rà soát.')
+    text=speech_text(text)
     path=Path(path);service_failures=0
     reason='Không nhận được âm thanh.'
     deferred=getattr(context,'defer_retry',False)

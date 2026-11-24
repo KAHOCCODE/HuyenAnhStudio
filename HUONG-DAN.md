@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3.11 — tách giọng nhân vật, giữ nhạc và hiệu ứng
+# HUYỄN ẢNH Studio 0.3.12 — thêm 25 giọng Việt chạy trên máy
 
 ## Cập nhật từ nhánh đang dùng
 
@@ -10,7 +10,19 @@ git pull --ff-only origin feat/video-frame-effects
 start.cmd
 ```
 
-Không cần đổi nhánh hoặc cài thêm thư viện cho bản 0.3.11 nếu đã có Edge TTS 7.3.1. Nếu app báo thư viện cũ, chạy install.cmd một lần. Các tính năng khung hình, lật ngang, màu, vùng che, chữ/logo, dải bên, tăng âm lượng giọng Việt và quy trình năm bước của nhánh này được giữ lại.
+Không cần đổi nhánh. Hai giọng Edge tiếp tục dùng bộ cài hiện có. Để dùng bộ giọng mới, đóng app và chạy **CAI-GIONG-MIEN-PHI.cmd** một lần trước khi mở lại `start.cmd`.
+
+## Bản 0.3.12: 25 giọng VieNeu và tông dễ thương
+
+Trong **4 · Sub và giọng → Âm thanh / giọng đọc → Giọng mặc định**, chọn giọng có chữ **VieNeu**. Có 25 giọng nam/nữ từ các vùng Bắc, Trung, Nam, gồm tự nhiên, đọc truyện và tin tức. Hai giọng Edge vẫn có trong danh sách. Nhấp đúp câu để chọn giọng riêng cho nhân vật hoặc bấm **Tạo / nghe riêng câu** trước khi chạy nhiều câu.
+
+- **Miễn phí, không hạn mức ký tự hoặc số lượt mỗi ngày**: VieNeu-TTS v3 Turbo chạy trên CPU của máy bạn, không gọi API TTS theo câu và không cần API key. Lần đầu cần mạng để tải mô hình từ Hugging Face; sau khi tải đủ, các lượt sau dùng lại tệp đã tải. Có thể có kiểm tra tệp cập nhật khi còn mạng. Giới hạn thực tế là thời gian xử lý, RAM và dung lượng ổ đĩa. Máy cũ có thể đọc chậm hơn Edge; chưa có số đo trên i7-6700HQ.
+- **Kiểu tông giọng → Cao nhẹ · dễ thương** nâng tông 2,5 bán âm và bù tốc độ để giữ gần nguyên thời lượng. Có thêm Cao sáng, Trầm ấm và Tự nhiên; chỉnh -6 đến +6 bán âm trong nâng cao. Đây là hiệu ứng trên giọng đã chọn, không phải giọng độc quyền của CapCut và không bảo đảm giống hệt. Không tự thêm biểu cảm hoặc đổi nội dung SRT.
+- Đổi tông dùng lại MP3 tự nhiên đã có, không gửi lại câu lên Edge hoặc bắt AI đọc lại. Thay lời, giọng hoặc tốc độ đọc mới cần tạo âm tự nhiên tương ứng. Mốc nguồn và đồng bộ kéo dài video được giữ; tông giọng đi vào bộ nhớ đệm và bản xuất.
+- Bộ cài dùng **vieneu 3.8.5**, CPU FP32, trong `.tts-venv` riêng. Không chọn INT8 trên CPU Skylake đời cũ. App chỉ mở **một mô hình** và đọc **một câu/lần** trong toàn bộ tác vụ, kể cả chọn nhiều lượt hoặc trộn giọng Edge/VieNeu. Các thiết lập gửi/thử lại Edge không điều khiển tốc độ xử lý của VieNeu.
+- Mỗi câu hoàn thành được lưu MP3. Hủy rồi chạy tiếp dùng lại các câu đã xong; mô hình được giải phóng khi tác vụ kết thúc. Với SRT hàng nghìn câu hoặc phim chia nhiều phần, nên nghe thử vài câu, sau đó chạy theo đợt. Không có giới hạn ngày nhưng không cam kết xử lý xong 11 phần trong một khoảng thời gian cố định.
+
+Nguồn bộ giọng: [VieNeu-TTS của Phạm Nguyễn Ngọc Bảo](https://github.com/pnnbao97/VieNeu-TTS), [SDK 3.8.5](https://pypi.org/project/vieneu/3.8.5/), [mô hình v3 Turbo và quyền dùng giọng có sẵn](https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo). Mã nguồn, mô hình và các mẫu giọng có sẵn được tác giả phát hành theo Apache-2.0; âm tạo từ các mẫu này được phép dùng trong video thương mại theo model card. Bộ cài lấy gói từ nhà phát hành, giữ các thông báo giấy phép đi kèm. Bản tích hợp này không dùng dịch vụ VieNeu v4 trả phí.
 
 ## Bản 0.3.11: xóa giọng nhân vật, giữ nhạc / hiệu ứng
 
@@ -61,7 +73,7 @@ Trong **4 · Sub và giọng → Âm thanh / giọng đọc → Chế độ gử
 - Bản xuất đồng bộ dùng 30 fps, có thể thấy lặp khung ở đoạn chậm; không có nội suy chuyển động AI. Xử lý lần lượt các đoạn nhỏ, hỗ trợ bộ mã hóa GPU đang có và dùng CPU khi không khả dụng. Cần dung lượng đĩa tạm; ghép cuối không mã hóa lại hình.
 - Chỉnh cắt khung/lật vẫn ở **2 · Hình ảnh → Khung và màu**; chữ/logo và phụ đề Việt giữ đúng chiều. Cắt/lật không bảo đảm tránh Content ID.
 
-Kiểm tra dành cho người phát triển: `python -m unittest discover -s tests -v`. Các bài kiểm tra mới dựng video và âm thanh tổng hợp bằng FFmpeg, không gọi Edge TTS; cần thử thêm trên Windows với video thực tế.
+Kiểm tra dành cho người phát triển: `python -m unittest discover -s tests -v`. Các bài kiểm tra mới dựng video và âm thanh tổng hợp bằng FFmpeg, không gọi Edge TTS; cần thử thêm trên Windows với video thực tế. Bộ cài VieNeu và API nhập thư viện đã được kiểm tra. Các kiểm tra hàng đợi VieNeu dùng tiến trình trả PCM giả lập; chưa kiểm chứng chất giọng của mô hình thực hoặc tốc độ trên máy người dùng. Bộ kiểm tra hiện còn lỗi có sẵn khi làm mờ một vùng rất nhỏ bằng boxblur.
 
 Ứng dụng desktop dành cho Windows để chỉnh hình, che phụ đề gốc, thêm chữ/logo, phụ đề Việt và giọng đọc. Giao diện làm việc theo năm bước với một bảng chỉnh cố định bên phải.
 
@@ -73,7 +85,7 @@ Kiểm tra dành cho người phát triển: `python -m unittest discover -s tes
 4. Chạy **`install.cmd`** một lần, có kết nối mạng để tải các thư viện.
 5. Khi báo cài đặt xong, chạy **`start.cmd`**. Những lần sau chỉ mở `start.cmd`.
 
-Đây là bản mã nguồn kèm trình khởi chạy, chưa phải tệp EXE độc lập. Không cần API key. Video được đọc và xử lý trên máy. Khi tạo giọng, văn bản câu phụ đề được gửi đến dịch vụ giọng nói trực tuyến qua Edge TTS; không gửi cả video lên dịch vụ này.
+Đây là bản mã nguồn kèm trình khởi chạy, chưa phải tệp EXE độc lập. Không cần API key. Video được đọc và xử lý trên máy. Với giọng Edge, văn bản câu phụ đề được gửi tới dịch vụ giọng nói trực tuyến; với giọng VieNeu, văn bản được đọc trên máy sau khi tải mô hình. Không gửi cả video lên dịch vụ TTS.
 
 ## 2. Năm bước thao tác
 

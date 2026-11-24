@@ -7,7 +7,9 @@ from typing import Callable
 from .retiming import voice_timing, map_time, source_rate
 from .video_effects import settings as effect_settings, output_size, picture_filter
 from .composition import validate_composition, prepare_layers, artwork_filter, sidebar_settings, subtitle_area
-from .tts import TTSCooldown, TTSServiceError, TTSDeferredRetry, fetch_voice, context as _tts_context, edge_client
+from .tts import TTSCooldown, TTSServiceError, TTSDeferredRetry, fetch_voice, speech_text, context as _tts_context, edge_client
+from .voices import is_local_voice, local_voice_name, validate_pitch, LOCAL_CACHE_VERSION
+from .local_tts import LocalTTSSession
 
 RATE = 24000
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,6 +50,7 @@ class Project:
     final_speed: float = 1.0
     voice: str = 'vi-VN-NamMinhNeural'
     tts_rate: int = 0
+    tts_pitch: float = 0.0
     tts_workers: int = 2
     tts_retry_mode: str = 'adaptive'
     voice_batch_minutes: int = 10
@@ -89,6 +92,9 @@ class Project:
         if not (.25 <= p.work_speed <= 2 and .25 <= p.final_speed <= 4): raise ValueError('Tốc độ không hợp lệ.')
         if not 1<=p.tts_workers<=6:raise ValueError('Số luồng TTS phải trong khoảng 1–6.')
         if p.tts_retry_mode not in ('adaptive','per_cue'):raise ValueError('Chế độ thử lại giọng không hợp lệ.')
+        validate_pitch(p.tts_pitch)
+        for voice in [p.voice]+[c.voice for c in p.cues]:
+            if is_local_voice(voice):local_voice_name(voice)
         if not isinstance(p.voice_batch_minutes,int) or not 1<=p.voice_batch_minutes<=120:raise ValueError('Đợt voice phải dài từ 1 đến 120 phút.')
         if not isinstance(p.voice_batch_index,int) or p.voice_batch_index<0:raise ValueError('Số thứ tự đợt voice không hợp lệ.')
         if not isinstance(p.batch_reviewed,dict):raise ValueError('Trạng thái rà lô không hợp lệ.')
@@ -312,9 +318,20 @@ def video_filter(p,ass_name='subtitles.ass',assets=None,finish=True):
     return ';'.join(filters)
 
 
-def raw_key(c,p):
+def synthesis_key(c,p):
     value=[plain(c.text),c.voice or p.voice,p.tts_rate+c.tts_rate]
+    if is_local_voice(value[1]):value.append(LOCAL_CACHE_VERSION)
     return hashlib.sha256(json.dumps(value,ensure_ascii=False).encode()).hexdigest()[:24]
+
+def raw_key(c,p):
+    key=synthesis_key(c,p);pitch=validate_pitch(p.tts_pitch)
+    if not pitch:return key
+    return hashlib.sha256(json.dumps(['pitch-v1',key,pitch]).encode()).hexdigest()[:24]
+
+def pitch_filter(pitch):
+    """Raise/lower pitch while restoring duration; all filters ship with FFmpeg."""
+    factor=2**(validate_pitch(pitch)/12)
+    return f'aresample={RATE},asetrate={RATE}*{factor:.9f},aresample={RATE},'+atempo(1/factor)
 
 def signature(p):
     return hashlib.sha256(json.dumps(['timing-v3',p.slow_video_for_voice,p.duration,p.work_speed,p.max_fit,[[c.id,c.start,c.end,raw_key(c,p)] for c in p.cues]],sort_keys=True).encode()).hexdigest()
@@ -526,14 +543,20 @@ def prepare_voice_playback(source,gain,cache,cancel,report):
 
 def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=None,mix=True,parallel_segments=None):
     cache=Path(cache);cache.mkdir(parents=True,exist_ok=True)
+    validate_pitch(p.tts_pitch)
     chosen=set(only_ids) if only_ids is not None else None
     spoken=[c for c in p.cues if plain(c.text) and (not only_id or c.id==only_id) and (chosen is None or c.id in chosen)]
     if only_ids is not None:
         order={id:i for i,id in enumerate(only_ids)};spoken.sort(key=lambda c:order[c.id])
     if not spoken:raise ValueError('Vùng chọn không có câu cần đọc.')
+    for c in spoken:
+        if is_local_voice(c.voice or p.voice):local_voice_name(c.voice or p.voice)
     from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
-    capacity=max(1,min(6 if p.tts_retry_mode=='per_cue' else 2,p.tts_workers))
+    local=any(is_local_voice(c.voice or p.voice) for c in spoken)
+    # A single persistent CPU model serves all cues, including interleaved batches.
+    capacity=1 if local else max(1,min(6 if p.tts_retry_mode=='per_cue' else 2,p.tts_workers))
     gate=TTSCooldown(capacity,spacing=.2,mode='per_cue') if p.tts_retry_mode=='per_cue' else TTSCooldown(capacity)
+    local_session=LocalTTSSession()
     errors=[];unique={raw_key(c,p):c for c in spoken};pending=[];done=0;total=len(unique);began=time.monotonic()
     cue_numbers={c.id:i+1 for i,c in enumerate(p.cues)}
     key_cues={key:[] for key in unique}
@@ -544,23 +567,44 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
     for key,c in unique.items():
         if (cache/(key+'.mp3')).is_file() and (cache/(key+'.mp3')).stat().st_size>0:done+=1
         else:pending.append((key,c))
-    version=edge_client().__version__ if pending else 'không cần kết nối'
+    if pending and (local or p.tts_pitch):
+        encoders=run([binary('ffmpeg'),'-hide_banner','-encoders'],cancel,capture=True)
+        if 'libmp3lame' not in encoders:raise TTSServiceError('FFmpeg thiếu libmp3lame để lưu giọng VieNeu / đổi tông. Cài FFmpeg bản đầy đủ rồi thử lại; MP3 đã có được giữ nguyên.')
+    edge_pending=any(not is_local_voice(c.voice or p.voice) and not (cache/(synthesis_key(c,p)+'.mp3')).is_file() for _,c in pending)
+    version=edge_client().__version__ if edge_pending else 'không cần kết nối'
     policy='Thử lại từng câu · tối đa 9 lần/câu' if p.tts_retry_mode=='per_cue' else 'Tự giảm tải / nghỉ chung'
-    report(65*done/max(1,total),f'Edge TTS {version} · Dùng lại {done}/{total} MP3 · {policy} · thử 1 câu trước, tối đa {capacity} kết nối cho toàn bộ lượt')
+    if local:
+        message='VieNeu 3.8.5 · CPU · không hạn mức ngày · 1 câu/lần'
+        if edge_pending:message+=f' + Edge TTS {version}'
+        message+=f' · Dùng lại {done}/{total} MP3'
+    else:message=f'Edge TTS {version} · Dùng lại {done}/{total} MP3 · {policy} · thử 1 câu trước, tối đa {capacity} kết nối cho toàn bộ lượt'
+    report(65*done/max(1,total),message)
     def fetch_one(pair):
         key,c,attempts=pair;raw=cache/(key+'.mp3');temp=raw.with_suffix('.partial.mp3')
+        base=cache/(synthesis_key(c,p)+'.mp3');base_temp=base.with_suffix('.synth.partial.mp3');wav=base.with_suffix('.partial.wav')
         try:
             if cancel.is_set():raise InterruptedError('Đã hủy tạo giọng.')
+            duration=None
             _tts_context.gate=gate;_tts_context.report=lambda msg:report(65*done/max(1,total),f'Câu {cue_numbers[c.id]} ({stamp(c.start)}) · '+msg)
             _tts_context.defer_retry=True;_tts_context.audio_attempts=attempts
-            asyncio.run(fetch_voice(plain(c.text),c.voice or p.voice,p.tts_rate+c.tts_rate,temp,cancel))
-            duration=probe(temp)['duration'];temp.replace(raw)
+            if not base.is_file() or base.stat().st_size==0:
+                if is_local_voice(c.voice or p.voice):
+                    local_session.speak(speech_text(plain(c.text)),c.voice or p.voice,wav,cancel,_tts_context.report)
+                    rate=1+(p.tts_rate+c.tts_rate)/100
+                    run([binary('ffmpeg'),'-v','error','-nostdin','-y','-i',wav,'-af',atempo(rate),'-ar',str(RATE),'-ac','1','-c:a','libmp3lame','-b:a','96k',base_temp],cancel)
+                else:asyncio.run(fetch_voice(plain(c.text),c.voice or p.voice,p.tts_rate+c.tts_rate,base_temp,cancel))
+                duration=probe(base_temp)['duration'];base_temp.replace(base)
+            if base!=raw:
+                run([binary('ffmpeg'),'-v','error','-nostdin','-y','-i',base,'-af',pitch_filter(p.tts_pitch),'-ar',str(RATE),'-ac','1','-c:a','libmp3lame','-b:a','96k',temp],cancel)
+                duration=probe(temp)['duration'];temp.replace(raw)
+            if duration is None:duration=probe(raw)['duration']
             return c.id,None,dict(duration=duration)
         except TTSDeferredRetry as e:return c.id,str(e),dict(retry=e)
         except (InterruptedError,TTSServiceError):raise
         except Exception as e:return c.id,str(e),{}
         finally:
             temp.unlink(missing_ok=True)
+            base_temp.unlink(missing_ok=True);wav.unlink(missing_ok=True)
             _tts_context.__dict__.clear()
     # Shared collector: workers never mutate manifests. Refill each freed slot immediately.
     from collections import deque
@@ -617,8 +661,10 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
                         if only_id:raise RuntimeError(error)
                         errors.extend(dict(id=c.id,error=error) for c in key_cues[key])
                     elapsed=round(time.monotonic()-began)
-                    report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(retries)} câu chờ thử lại · tối đa {gate.limit} kết nối · {len(errors)} lỗi'+(f' · Câu {cue_numbers[id]} ({stamp(unique[key].start)}) · '+error if error else ''))
-    finally:atomic_json(metadata_path,metadata)
+                    report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(retries)} câu chờ thử lại · '+('CPU 1 câu/lần' if local else f'tối đa {gate.limit} kết nối')+f' · {len(errors)} lỗi'+(f' · Câu {cue_numbers[id]} ({stamp(unique[key].start)}) · '+error if error else ''))
+    finally:
+        local_session.close()
+        atomic_json(metadata_path,metadata)
     if only_id:
         row=prepare_voice_row(spoken[0],p,cache,cancel)
         if row:
@@ -665,6 +711,7 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
 def check_project(p):
     if not p.video or not Path(p.video).is_file(): raise ValueError('Hãy chọn video đang tồn tại.')
     validate_voice_volume(p.voice_volume)
+    validate_pitch(p.tts_pitch)
     effect_settings(p.video_effects)
     validate_composition(p,files=True)
     for r in p.screen_regions:validate_screen_region(r,p.duration)
@@ -957,6 +1004,7 @@ def remove_cached_voice(p,cache,ids=None):
     cache=Path(cache);all_voice=ids is None;chosen=set(ids or [])
     keys={raw_key(c,p) for c in p.cues if all_voice or c.id in chosen}
     affected=[c.id for c in p.cues if raw_key(c,p) in keys]
+    keys.update(synthesis_key(c,p) for c in p.cues if all_voice or c.id in affected)
     paths=[]
     for path in cache.iterdir():
         name=path.name
