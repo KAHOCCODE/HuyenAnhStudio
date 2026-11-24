@@ -13,6 +13,7 @@ from PySide6.QtMultimedia import QMediaPlayer,QAudioOutput,QVideoSink,QMediaDevi
 from .core import *
 from .tts import check_voice_service
 from .voices import VOICES, PITCH_PRESETS
+from .voice_preview_ui import VoicePreviewDialog
 from .effects_ui import EffectsDialog
 from .result_player import ResultPlayer
 from .layers_ui import LayersPanel
@@ -533,6 +534,7 @@ class Window(QMainWindow):
     def __init__(self):
         super().__init__();self.p=Project();self.project_path=None;self.selected=None;self.busy=False;self.dirty=False;self.undo=[];self.redo=[];self.worker=None;self.rows={};self.syncing=False;self.editor_dirty=False;self.editor_loading=False;self.selection=None;self.range_play_end=None
         root=Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation));self.cache_root=root/'cache';self.cache_id=uuid.uuid4().hex;self.cache=self.cache_root/self.cache_id;self.cache.mkdir(parents=True,exist_ok=True)
+        self.local_tts_session=LocalTTSSession()
         self.setWindowTitle('HUYỄN ẢNH Studio · Phụ đề & Lồng tiếng');self.resize(1320,720);self.setMinimumSize(1080,650)
         self.player=QMediaPlayer(self);self.audio=QAudioOutput(self);self.player.setAudioOutput(self.audio)
         self.voice_player=QMediaPlayer(self);self.voice_audio=QAudioOutput(self);self.voice_player.setAudioOutput(self.voice_audio)
@@ -565,7 +567,7 @@ class Window(QMainWindow):
         base=QWidget();self.setCentralWidget(base);outer=QVBoxLayout(base);outer.setContentsMargins(14,12,14,10);outer.setSpacing(10)
         head=QHBoxLayout();brand=QLabel('HUYỄN ẢNH  /  STUDIO');brand.setObjectName('brand');head.addWidget(brand);head.addStretch()
         project=self.button('Dự án ▾',lambda:None);menu=QMenu(project)
-        menu.addAction('Dự án mới',self.new_project);menu.addAction('Mở dự án…',self.open_project);menu.addAction('Lưu thành…',lambda:self.save(save_as=True));menu.addSeparator();menu.addAction('Toàn màn hình · F11',self.fullscreen);project.setMenu(menu);head.addWidget(project)
+        menu.addAction('Dự án mới',self.new_project);menu.addAction('Mở dự án…',self.open_project);menu.addAction('Lưu thành…',lambda:self.save(save_as=True));menu.addSeparator();menu.addAction('Nghe thử giọng…',self.preview_voice_dialog);menu.addAction('Giải phóng RAM mô hình giọng',self.release_local_tts);menu.addSeparator();menu.addAction('Toàn màn hình · F11',self.fullscreen);project.setMenu(menu);head.addWidget(project)
         head.addWidget(self.button('Hoàn tác',self.undo_action));head.addWidget(self.button('Lưu dự án',self.save,True));outer.addLayout(head)
         self.split=QSplitter(Qt.Horizontal);outer.addWidget(self.split,1)
         left=QWidget();ll=QVBoxLayout(left);ll.setContentsMargins(0,0,0,0);ll.setSpacing(4)
@@ -627,7 +629,9 @@ class Window(QMainWindow):
         voicebox=QGroupBox('Lồng tiếng · Edge / VieNeu miễn phí');vf=QFormLayout(voicebox)
         self.work.setToolTip('Giảm tốc video trước khi tạo giọng để mỗi khoảng phụ đề có thêm thời gian đọc.')
         vf.addRow('Tốc độ video dựng ×',self.work);self.work_hint=QLabel();self.work_hint.setWordWrap(True);self.work_hint.setObjectName('muted');vf.addRow(self.work_hint)
-        self.voice=QComboBox();[self.voice.addItem(k,v) for k,v in VOICES.items()];self.voice.currentIndexChanged.connect(self.settings_changed);vf.addRow('Giọng mặc định',self.voice)
+        self.voice=QComboBox();[self.voice.addItem(k,v) for k,v in VOICES.items()];self.voice.currentIndexChanged.connect(self.settings_changed)
+        self.voice_row=QWidget();vr=QHBoxLayout(self.voice_row);vr.setContentsMargins(0,0,0,0);vr.addWidget(self.voice,1)
+        self.voice_preview_btn=self.button('▶ Nghe thử',self.preview_voice_dialog);vr.addWidget(self.voice_preview_btn);vf.addRow('Giọng mặc định',self.voice_row)
         self.voice.setMaxVisibleItems(14);self.cue_voice.setMaxVisibleItems(14)
         self.cue_voice.setMinimumWidth(80);self.cue_voice.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Fixed)
         self.voice_hint=QLabel();self.voice_hint.setWordWrap(True);vf.addRow(self.voice_hint)
@@ -665,7 +669,7 @@ class Window(QMainWindow):
         self.slow_video=QCheckBox('Câu dài: làm chậm video, giữ giọng');self.slow_video.toggled.connect(self.settings_changed);vf.addRow(self.slow_video)
         delete=self.button('Dọn giọng đọc đã tạo ▾',lambda:None);menu=QMenu(delete);menu.addAction('Xóa giọng các câu chọn…',self.delete_selected_voice);menu.addAction('Xóa toàn bộ giọng dự án…',self.delete_all_voice);delete.setMenu(menu);vf.addRow(delete)
         from .workflow_ui import fold_rows
-        fold_rows(voicebox,{self.work,self.work_hint,self.voice,self.voice_hint,self.tone,self.rate,self.voice_scope,self.generate_btn,self.voice_summary,tools,self.vol,self.mute_original,self.vvol,self.tts_mode,self.workers,self.remove_dialogue_btn},'Tách âm nền & thiết lập nâng cao')
+        fold_rows(voicebox,{self.work,self.work_hint,self.voice_row,self.voice_hint,self.tone,self.rate,self.voice_scope,self.generate_btn,self.voice_summary,tools,self.vol,self.mute_original,self.vvol,self.tts_mode,self.workers,self.remove_dialogue_btn},'Tách âm nền & thiết lập nâng cao')
         pr.addWidget(voicebox);pr.addStretch()
         exportbox=QGroupBox('Xuất video');ef=QFormLayout(exportbox)
         self.export_mode=QComboBox();self.export_mode.addItem('Nhanh · tệp lớn hơn','veryfast');self.export_mode.addItem('Nhanh nhất · tự dùng GPU','ultrafast');self.export_mode.addItem('Nén gọn · chậm','medium')
@@ -775,7 +779,7 @@ class Window(QMainWindow):
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
         self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.12'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.13'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -925,7 +929,18 @@ class Window(QMainWindow):
             'Đóng app, chạy CAI-GIONG-MIEN-PHI.cmd một lần rồi mở lại start.cmd.\n\n'
             'Chọn giọng có chữ VieNeu trong Giọng mặc định hoặc riêng từng câu. Chọn Kiểu tông giọng → Cao nhẹ · dễ thương nếu muốn nâng tông; đây là hiệu ứng, không phải giọng CapCut.\n\n'
             'Lần đầu cần mạng để tải mô hình từ Hugging Face. Sau khi tải đủ, mô hình dùng lại trên máy, không API key, không hạn mức ngày. CPU đọc một câu/lần; tốc độ phụ thuộc máy và có thể chậm hơn Edge.\n\n'
-            'Bấm đúp một câu → Tạo / nghe riêng câu trước khi chạy cả phần. Dừng rồi chạy tiếp sẽ dùng lại MP3 đã có.')
+            'Bấm Nghe thử cạnh danh sách giọng hoặc Dự án → Nghe thử giọng để đọc một câu bất kỳ, không cần video / SRT. Mô hình được giữ trong RAM để đổi giọng; có thể giải phóng RAM trong cửa sổ nghe thử hoặc menu Dự án. Dừng rồi chạy tiếp dùng lại MP3 đã có.')
+    def preview_voice_dialog(self,checked=False):
+        if not self.guard():return
+        self.player.pause();self.voice_player.pause();self.sample_player.stop()
+        cue=next((c for c in self.p.cues if c.id==self.selected),None)
+        dialog=VoicePreviewDialog(self,voice=self.voice.currentData(),text=plain(cue.text) if cue else None)
+        dialog.exec();dialog.deleteLater()
+    def release_local_tts(self,checked=False):
+        if not self.guard():return
+        self.local_tts_session.close()
+        self.status.setText('Đã giải phóng mô hình giọng khỏi RAM. MP3 và tệp mô hình trên ổ đĩa được giữ lại.')
+        self.log(self.status.text())
     def tts_mode_changed(self,*args):
         if self.syncing:return
         if self.busy:self.load_controls();return
@@ -1676,7 +1691,7 @@ class Window(QMainWindow):
                 if not voice_ready(self.p,self.cache):self.error('Ghép voice đã có trước khi lưu SRT theo thời gian video đã giãn.');return
                 timing=load_manifest(self.cache)['timing'];cues=retimed_cues(self.p,timing);speed=self.p.final_speed if 'bản cuối' in kind else 1
             write_srt(path,cues,speed);self.log('Đã lưu SRT: '+path)
-    def start_job(self,fn,done,label):
+    def start_job(self,fn,done,label,failed=None):
         if not self.guard():return
         self.player.pause();self.voice_player.stop();self.voice_player.setSource(QUrl());self.sample_player.stop();self.busy=True;self.cancel_btn.setEnabled(True);self.progress.setValue(0);self.status.setText(label);self.log(label)
         self.close_cpu();self.refresh_workflow()
@@ -1688,7 +1703,10 @@ class Window(QMainWindow):
             self.worker=None
             self.busy=False;self.cancel_btn.setEnabled(False);self.refresh_workflow()
             self.refresh_effect_preview()
-            if self.pending_error:self.status.setText('Đã dừng / có lỗi');self.error(self.pending_error)
+            if self.pending_error:
+                self.status.setText('Đã dừng / có lỗi')
+                if failed:failed(self.pending_error)
+                else:self.error(self.pending_error)
             else:
                 try:done(self.pending_result)
                 except Exception as e:self.error(str(e))
@@ -1896,14 +1914,14 @@ class Window(QMainWindow):
             if parallel:
                 ids=interleaved_voice_ids(p,segments)
                 if not ids:return dict(rows=[],tts_errors=[],generated_only=True,missing_count=0,queue_completed=len(segments),queue_total=len(segments))
-                result=generate_voices(p,cache,cancel,lambda n,msg:report(n,f'Song song {len(segments)} lượt · '+msg),only_ids=ids,mix=False,parallel_segments=segments)
+                result=generate_voices(p,cache,cancel,lambda n,msg:report(n,f'Song song {len(segments)} lượt · '+msg),only_ids=ids,mix=False,parallel_segments=segments,local_session=self.local_tts_session)
                 result.update(queue_completed=len(segments),queue_total=len(segments));return result
             rows={};errors=[];completed=0;attempted=[]
             for i,(a,b) in enumerate(segments):
                 if cancel.is_set():raise InterruptedError('Đã hủy; các câu đã tạo vẫn được giữ.')
                 ids=[c.id for c in p.cues if a<=c.start<b and plain(c.text)]
                 if ids:
-                    result=generate_voices(p,cache,cancel,lambda n,msg:report((i*100+n)/len(segments),f'Lượt {i+1}/{len(segments)} · '+msg),only_ids=ids,mix=False)
+                    result=generate_voices(p,cache,cancel,lambda n,msg:report((i*100+n)/len(segments),f'Lượt {i+1}/{len(segments)} · '+msg),only_ids=ids,mix=False,local_session=self.local_tts_session)
                     attempted.extend(ids);rows.update({r['id']:r for r in result['rows']});errors.extend(result.get('tts_errors',[]))
                     completed+=1
                     if stop_on_error and result.get('missing_count'):break
@@ -1937,7 +1955,7 @@ class Window(QMainWindow):
         def done(result):
             self.voices_done(result)
             if after:after()
-        self.start_job(lambda c,r:generate_voices(p,self.cache,c,r,only_ids=only_ids,mix=False),done,
+        self.start_job(lambda c,r:generate_voices(p,self.cache,c,r,only_ids=only_ids,mix=False,local_session=self.local_tts_session),done,
             'Tạo voice vùng chọn' if only_ids is not None else 'Tạo / cập nhật toàn bộ voice')
 
     def voices_done(self,result):
@@ -1967,7 +1985,7 @@ class Window(QMainWindow):
             row=result['sample'];self.rows[id]=row;self.model.refresh();self.timeline.update()
             src=result['playback'];self._sample_voice=True;self.sample_audio.setVolume(min(1,self.p.voice_volume));self.sample_player.setSource(QUrl.fromLocalFile(src));self.sample_player.setPlaybackRate(self.p.final_speed if self.preview_mode.currentIndex()==1 else 1);self.sample_player.play();self.status.setText(f'Nghe câu đã khớp ({row["factor"]:.2f}×)' if row['ok'] else f'Câu quá dài ({row["factor"]:.2f}×) — nghe đủ lời ở tốc độ giới hạn')
         def work(cancel,report):
-            result=generate_voices(p,self.cache,cancel,report,id)
+            result=generate_voices(p,self.cache,cancel,report,id,local_session=self.local_tts_session)
             result['playback']=prepare_voice_playback(result['sample']['path'],p.voice_volume,self.cache,cancel,report)
             return result
         self.start_job(work,done,'Tạo giọng câu đang chọn')
@@ -2022,7 +2040,7 @@ class Window(QMainWindow):
     def closeEvent(self,event):
         if self.busy:self.error('Hãy hủy hoặc đợi tác vụ hoàn tất trước khi đóng.');event.ignore();return
         if not self.confirm_discard():event.ignore();return
-        self.voice_gain_timer.stop();self.close_cpu();self.player.stop();self.voice_player.stop();self.sample_player.stop();event.accept()
+        self.voice_gain_timer.stop();self.close_cpu();self.player.stop();self.voice_player.stop();self.sample_player.stop();self.local_tts_session.close();event.accept()
 
 def voice_ready_cached(win):return getattr(win,'voice_is_ready',False)
 

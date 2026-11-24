@@ -107,7 +107,8 @@ class LocalTTSTests(unittest.TestCase):
         self.assertEqual(result['missing_count'], 0)
         self.assertEqual(len(result['rows']), 3)
         self.assertEqual(len(self.sessions), 1)
-        self.assertIsNotNone(self.sessions[0].proc.poll())
+        self.assertIsNone(self.sessions[0].proc)
+        self.assertFalse(self.sessions[0].ready)
         log = self.worker.with_suffix('.log').read_text().splitlines()
         self.assertEqual(log[0], 'loaded')
         self.assertCountEqual(log[1:], ['Trúc Ly|Một', 'Hải Đăng|Hai'])
@@ -156,7 +157,8 @@ class LocalTTSTests(unittest.TestCase):
         self.assertTrue((self.cache / (raw_key(p.cues[0], p) + '.mp3')).is_file())
         self.assertFalse((self.cache / (raw_key(p.cues[1], p) + '.mp3')).is_file())
         self.assertFalse(list(self.cache.glob('*.partial.*')))
-        self.assertIsNotNone(self.sessions[0].proc.poll())
+        self.assertIsNone(self.sessions[0].proc)
+        self.assertFalse(self.sessions[0].ready)
 
     def test_local_cue_error_does_not_drop_following_cues(self):
         p = Project(duration=4, voice=VIENEU_PREFIX + 'Trúc Ly',
@@ -240,9 +242,10 @@ class LocalTTSTests(unittest.TestCase):
         with patch.dict(sys.modules, {'onnxruntime': ort, 'vieneu': SimpleNamespace(Vieneu=lambda **kwargs: self.assert_cpu(kwargs, engine)), 'soundfile': SimpleNamespace()}), patch.object(module.importlib.metadata, 'version', return_value='3.8.5'), patch.object(module.sys, 'stdin', requests), patch.object(module.sys, 'stdout', output):
             self.assertEqual(module.main(), 0)
         events = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertEqual(events[0]['event'], 'ready')
-        self.assertEqual(events[1]['event'], 'error')
-        self.assertIn('âm thanh', events[1]['message'])
+        outcomes=[e for e in events if e['event'] in ('ready','error')]
+        self.assertEqual(outcomes[0]['event'], 'ready')
+        self.assertEqual(outcomes[1]['event'], 'error')
+        self.assertIn('âm thanh', outcomes[1]['message'])
 
     def assert_cpu(self, kwargs, engine):
         self.assertEqual({k: kwargs[k] for k in ('mode','backend','device','precision')},

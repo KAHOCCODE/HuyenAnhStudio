@@ -541,7 +541,7 @@ def prepare_voice_playback(source,gain,cache,cancel,report):
     return result
 
 
-def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=None,mix=True,parallel_segments=None):
+def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=None,mix=True,parallel_segments=None,local_session=None):
     cache=Path(cache);cache.mkdir(parents=True,exist_ok=True)
     validate_pitch(p.tts_pitch)
     chosen=set(only_ids) if only_ids is not None else None
@@ -556,7 +556,8 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
     # A single persistent CPU model serves all cues, including interleaved batches.
     capacity=1 if local else max(1,min(6 if p.tts_retry_mode=='per_cue' else 2,p.tts_workers))
     gate=TTSCooldown(capacity,spacing=.2,mode='per_cue') if p.tts_retry_mode=='per_cue' else TTSCooldown(capacity)
-    local_session=LocalTTSSession()
+    keep_local_session=local_session is not None
+    if local_session is None:local_session=LocalTTSSession()
     errors=[];unique={raw_key(c,p):c for c in spoken};pending=[];done=0;total=len(unique);began=time.monotonic()
     cue_numbers={c.id:i+1 for i,c in enumerate(p.cues)}
     key_cues={key:[] for key in unique}
@@ -579,6 +580,8 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
         message+=f' · Dùng lại {done}/{total} MP3'
     else:message=f'Edge TTS {version} · Dùng lại {done}/{total} MP3 · {policy} · thử 1 câu trước, tối đa {capacity} kết nối cho toàn bộ lượt'
     report(65*done/max(1,total),message)
+    if local and pending and local_session.ready:
+        report(65*done/max(1,total),'Dùng lại mô hình VieNeu trong RAM · đổi giọng không nạp lại mô hình.')
     def fetch_one(pair):
         key,c,attempts=pair;raw=cache/(key+'.mp3');temp=raw.with_suffix('.partial.mp3')
         base=cache/(synthesis_key(c,p)+'.mp3');base_temp=base.with_suffix('.synth.partial.mp3');wav=base.with_suffix('.partial.wav')
@@ -663,7 +666,7 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
                     elapsed=round(time.monotonic()-began)
                     report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(retries)} câu chờ thử lại · '+('CPU 1 câu/lần' if local else f'tối đa {gate.limit} kết nối')+f' · {len(errors)} lỗi'+(f' · Câu {cue_numbers[id]} ({stamp(unique[key].start)}) · '+error if error else ''))
     finally:
-        local_session.close()
+        if not keep_local_session or cancel.is_set():local_session.close()
         atomic_json(metadata_path,metadata)
     if only_id:
         row=prepare_voice_row(spoken[0],p,cache,cancel)
@@ -706,6 +709,18 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
     result['tts_errors']=errors
     atomic_json(batch_manifest_path(cache,segment) if segment is not None else cache/'voices.json',result)
     return result
+
+
+def preview_voice(text,voice,rate,pitch,cache,cancel,report,local_session=None):
+    """Audition an arbitrary sentence independently of video, SRT and project state."""
+    text=speech_text(plain(text))
+    if len(text)>500:raise ValueError('Nghe thử tối đa 500 ký tự. Hãy nhập một câu hoặc đoạn ngắn.')
+    if isinstance(rate,bool) or not isinstance(rate,int) or not -40<=rate<=100:raise ValueError('Tốc độ nghe thử phải từ -40 đến +100%.')
+    p=Project(voice=voice,tts_rate=rate,tts_pitch=validate_pitch(pitch),
+              cues=[Cue(0,1,text,id='audition')])
+    result=generate_voices(p,cache,cancel,report,only_id='audition',local_session=local_session)
+    row=result['sample']
+    return dict(path=row['raw'],duration=row['duration'],voice=voice)
 
 
 def check_project(p):

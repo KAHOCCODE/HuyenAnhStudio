@@ -1,4 +1,4 @@
-"""One optional CPU model process per voice job; the GUI never imports ML packages."""
+"""A reusable CPU model process; the GUI never imports ML packages."""
 import json
 import os
 from pathlib import Path
@@ -30,6 +30,13 @@ class LocalTTSSession:
         self.reader = None
         self.events = queue.Queue()
         self.errors = None
+        self._ready = False
+        self.lock = threading.Lock()
+
+    @property
+    def ready(self):
+        proc = self.proc
+        return self._ready and proc is not None and proc.poll() is None
 
     def _start(self, cancel, report):
         if cancel.is_set():
@@ -61,6 +68,7 @@ class LocalTTSSession:
             self.reader = threading.Thread(target=read, daemon=True)
             self.reader.start()
             self._wait('ready', cancel, report, loading=True)
+            self._ready = True
         except BaseException:
             self.close()
             raise
@@ -68,12 +76,13 @@ class LocalTTSSession:
     def _wait(self, event, cancel, report, loading=False):
         began = time.monotonic()
         last = -5
+        phase = 'Đang khởi động bộ đọc VieNeu' if loading else 'VieNeu đang đọc câu trên CPU'
         while True:
             if cancel.is_set():
                 raise InterruptedError('Đã hủy tạo giọng; MP3 đã có được giữ lại.')
             elapsed = time.monotonic() - began
             if report and elapsed - last >= 5:
-                report(('Đang tải / mở mô hình VieNeu trên CPU' if loading else 'VieNeu đang đọc câu trên CPU') + f' · {elapsed:.0f}s')
+                report(phase + f' · {elapsed:.0f}s')
                 last = elapsed
             if elapsed > (3600 if loading else 600):
                 raise TTSServiceError('VieNeu chờ quá lâu. Hủy rồi chạy tiếp để dùng lại MP3 đã có; kiểm tra bộ cài / mô hình nếu lỗi lặp lại.')
@@ -83,6 +92,19 @@ class LocalTTSSession:
                 continue
             if message.get('event') == event:
                 return message
+            if message.get('event') == 'phase':
+                phase = message.get('message', phase)
+                if report:report(phase)
+                last = elapsed
+                continue
+            if message.get('event') == 'download':
+                done = max(0, float(message.get('downloaded', 0)))
+                total = max(0, float(message.get('total') or 0))
+                size = f'{done/1048576:.1f}' + (f'/{total/1048576:.1f} MB · {min(100,100*done/total):.0f}%' if total else ' MB')
+                phase = f'Đang tải {message.get("filename", "mô hình")} · {size}'
+                if report:report(phase)
+                last = elapsed
+                continue
             if message.get('event') == 'error':
                 cls = TTSServiceError if loading or message.get('fatal') else TTSRequestError
                 raise cls('VieNeu: ' + message.get('message', 'Không tạo được âm thanh.'))
@@ -90,8 +112,21 @@ class LocalTTSSession:
                 raise TTSServiceError('Bộ giọng VieNeu đã dừng. Máy có thể thiếu RAM hoặc thư viện. Chạy lại CAI-GIONG-MIEN-PHI.cmd, đóng bớt ứng dụng rồi thử một câu; MP3 đã có được giữ lại.')
 
     def speak(self, text, voice, target, cancel, report=None):
+        while not self.lock.acquire(timeout=.1):
+            if cancel.is_set():raise InterruptedError('Đã hủy tạo giọng.')
+        try:
+            self._speak(text, voice, target, cancel, report)
+        except (InterruptedError, TTSServiceError):
+            # An interrupted pipe cannot safely reuse a delayed response on the next cue.
+            self.close()
+            raise
+        finally:
+            self.lock.release()
+
+    def _speak(self, text, voice, target, cancel, report=None):
         name = local_voice_name(voice)
-        if self.proc is None:
+        if not self.ready:
+            self.close()
             self._start(cancel, report)
         if cancel.is_set():
             raise InterruptedError('Đã hủy tạo giọng.')
@@ -105,6 +140,7 @@ class LocalTTSSession:
             raise TTSRequestError('VieNeu không trả về âm thanh; mở câu này để nghe / tạo lại.')
 
     def close(self):
+        self._ready = False
         if self.proc:
             if self.proc.poll() is None:
                 self.proc.terminate()
@@ -120,4 +156,8 @@ class LocalTTSSession:
                     stream.close()
         if self.errors:
             self.errors.close()
+        self.proc = None
+        self.reader = None
+        self.errors = None
+        self.events = queue.Queue()
 

@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3.12 — thêm 25 giọng Việt chạy trên máy
+# HUYỄN ẢNH Studio 0.3.13 — nghe thử và đổi giọng dùng chung mô hình
 
 ## Cập nhật từ nhánh đang dùng
 
@@ -12,6 +12,16 @@ start.cmd
 
 Không cần đổi nhánh. Hai giọng Edge tiếp tục dùng bộ cài hiện có. Để dùng bộ giọng mới, đóng app và chạy **CAI-GIONG-MIEN-PHI.cmd** một lần trước khi mở lại `start.cmd`.
 
+## Bản 0.3.13: nghe thử câu bất kỳ, giữ mô hình trong RAM
+
+Bấm **▶ Nghe thử** ngay cạnh **Giọng mặc định**, hoặc **Dự án → Nghe thử giọng…** khi chưa mở video. Chọn giọng, nhập một câu bất kỳ (tối đa 500 ký tự), chọn tông / tốc độ rồi bấm **Nghe thử**. Nếu đang chọn một câu SRT, app lấy câu đó làm nội dung thử; bạn có thể sửa thành câu khác. Âm nghe thử phát theo tốc độ bạn chọn, không bị ép theo một mốc phụ đề hoặc tốc độ phát video.
+
+- Cửa sổ nghe thử không lưu dự án hoặc thay nội dung SRT. Chỉ nút **Dùng lựa chọn này cho dự án** áp dụng giọng, tông và tốc độ làm mặc định; có thể hoàn tác.
+- Cả 25 giọng VieNeu dùng chung **một mô hình CPU trong suốt phiên mở app**. Nghe thử, đổi giọng, đóng cửa sổ nghe thử, tạo riêng một câu hoặc tạo theo đợt đều dùng lại bộ đọc đã nạp. Không mở một mô hình mới cho mỗi giọng / mỗi lượt.
+- Mô hình chỉ cần nạp lại sau khi đóng app, bấm **Giải phóng RAM** trong cửa sổ thử / menu Dự án, hoặc phải khởi động lại bộ đọc sau khi hủy / lỗi tiến trình. Hủy khi đang đọc sẽ đóng bộ đọc để không nhận nhầm kết quả cũ vào câu tiếp theo. MP3 đã hoàn tất và mô hình trên ổ đĩa được giữ lại.
+- Nhật ký phân biệt **kiểm tra tệp**, **đang tải tệp** (MB và % khi có dữ liệu tiến độ), **nạp mô hình CPU**, **sẵn sàng** và **đọc câu**. Đoạn chờ “Đang tải / mở mô hình” ở bản trước chưa đủ để kết luận bị treo hoặc dịch vụ trả NoAudioReceived. Lần đầu vẫn cần tải mô hình; đổi giọng sau đó dùng lại mô hình đang trong RAM.
+- Giữ mô hình giúp đổi giọng nhanh hơn nhưng chiếm RAM. Nếu chuẩn bị dùng tác vụ khác trên máy 8 GB, có thể chủ động giải phóng bộ đọc; các MP3 nghe thử / lồng tiếng vẫn dùng lại được.
+
 ## Bản 0.3.12: 25 giọng VieNeu và tông dễ thương
 
 Trong **4 · Sub và giọng → Âm thanh / giọng đọc → Giọng mặc định**, chọn giọng có chữ **VieNeu**. Có 25 giọng nam/nữ từ các vùng Bắc, Trung, Nam, gồm tự nhiên, đọc truyện và tin tức. Hai giọng Edge vẫn có trong danh sách. Nhấp đúp câu để chọn giọng riêng cho nhân vật hoặc bấm **Tạo / nghe riêng câu** trước khi chạy nhiều câu.
@@ -20,7 +30,7 @@ Trong **4 · Sub và giọng → Âm thanh / giọng đọc → Giọng mặc đ
 - **Kiểu tông giọng → Cao nhẹ · dễ thương** nâng tông 2,5 bán âm và bù tốc độ để giữ gần nguyên thời lượng. Có thêm Cao sáng, Trầm ấm và Tự nhiên; chỉnh -6 đến +6 bán âm trong nâng cao. Đây là hiệu ứng trên giọng đã chọn, không phải giọng độc quyền của CapCut và không bảo đảm giống hệt. Không tự thêm biểu cảm hoặc đổi nội dung SRT.
 - Đổi tông dùng lại MP3 tự nhiên đã có, không gửi lại câu lên Edge hoặc bắt AI đọc lại. Thay lời, giọng hoặc tốc độ đọc mới cần tạo âm tự nhiên tương ứng. Mốc nguồn và đồng bộ kéo dài video được giữ; tông giọng đi vào bộ nhớ đệm và bản xuất.
 - Bộ cài dùng **vieneu 3.8.5**, CPU FP32, trong `.tts-venv` riêng. Không chọn INT8 trên CPU Skylake đời cũ. App chỉ mở **một mô hình** và đọc **một câu/lần** trong toàn bộ tác vụ, kể cả chọn nhiều lượt hoặc trộn giọng Edge/VieNeu. Các thiết lập gửi/thử lại Edge không điều khiển tốc độ xử lý của VieNeu.
-- Mỗi câu hoàn thành được lưu MP3. Hủy rồi chạy tiếp dùng lại các câu đã xong; mô hình được giải phóng khi tác vụ kết thúc. Với SRT hàng nghìn câu hoặc phim chia nhiều phần, nên nghe thử vài câu, sau đó chạy theo đợt. Không có giới hạn ngày nhưng không cam kết xử lý xong 11 phần trong một khoảng thời gian cố định.
+- Mỗi câu hoàn thành được lưu MP3. Hủy rồi chạy tiếp dùng lại các câu đã xong; từ bản 0.3.13, mô hình được giữ sau tác vụ thành công để dùng cho lượt tiếp theo. Với SRT hàng nghìn câu hoặc phim chia nhiều phần, nên nghe thử vài câu, sau đó chạy theo đợt. Không có giới hạn ngày nhưng không cam kết xử lý xong 11 phần trong một khoảng thời gian cố định.
 
 Nguồn bộ giọng: [VieNeu-TTS của Phạm Nguyễn Ngọc Bảo](https://github.com/pnnbao97/VieNeu-TTS), [SDK 3.8.5](https://pypi.org/project/vieneu/3.8.5/), [mô hình v3 Turbo và quyền dùng giọng có sẵn](https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo). Mã nguồn, mô hình và các mẫu giọng có sẵn được tác giả phát hành theo Apache-2.0; âm tạo từ các mẫu này được phép dùng trong video thương mại theo model card. Bộ cài lấy gói từ nhà phát hành, giữ các thông báo giấy phép đi kèm. Bản tích hợp này không dùng dịch vụ VieNeu v4 trả phí.
 
