@@ -14,6 +14,7 @@ from .core import *
 from .tts import check_voice_service
 from .voices import VOICES, PITCH_PRESETS
 from .voice_preview_ui import VoicePreviewDialog
+from .voice_filters_ui import VoiceFilters
 from .effects_ui import EffectsDialog
 from .result_player import ResultPlayer
 from .layers_ui import LayersPanel
@@ -594,6 +595,7 @@ class Window(QMainWindow):
         self.editor_dialog=QDockWidget('Sửa câu đang chọn · kéo tiêu đề để di chuyển',self);self.editor_dialog.setObjectName('cue-editor');self.editor_dialog.setFeatures(QDockWidget.DockWidgetClosable);edit=QWidget();self.editor_dialog.setWidget(edit);self.addDockWidget(Qt.BottomDockWidgetArea,self.editor_dialog);self.editor_dialog.hide();el=QVBoxLayout(edit);tr=QHBoxLayout();self.start=QLineEdit();self.end=QLineEdit();self.start.setPlaceholderText('00:00:00,000');self.end.setPlaceholderText('00:00:00,000');tr.addWidget(QLabel('Từ'));tr.addWidget(self.start);tr.addWidget(QLabel('Đến'));tr.addWidget(self.end);el.addLayout(tr)
         self.text=QTextEdit();self.text.setAcceptRichText(False);self.text.setMinimumHeight(60);self.text.setMaximumHeight(150);self.text.setPlaceholderText('Chọn câu phụ đề ở danh sách hoặc timeline');el.addWidget(self.text)
         r=QHBoxLayout();self.cue_voice=QComboBox();self.cue_voice.addItem('Giọng mặc định','');[self.cue_voice.addItem(k,v) for k,v in VOICES.items()];r.addWidget(self.cue_voice);self.cue_rate=QSpinBox();self.cue_rate.setRange(-40,100);self.cue_rate.setSuffix(' %');self.cue_rate.setToolTip('Tốc độ bổ sung riêng câu này');r.addWidget(self.cue_rate);r.addWidget(self.button('Áp dụng câu',self.apply_cue,True));r.addWidget(self.button('Tạo / nghe riêng câu',self.sample));el.addLayout(r);el.addWidget(self.button('Đóng khung sửa',self.editor_dialog.hide));self.split.addWidget(center)
+        self.cue_voice_filters=VoiceFilters(self.cue_voice,allow_default=True);el.insertWidget(el.count()-2,self.cue_voice_filters)
         right=QScrollArea();right.setWidgetResizable(True);right.setMinimumWidth(295);right.setMaximumWidth(375);props=QWidget();pr=QVBoxLayout(props);pr.setContentsMargins(12,0,5,0)
         self.effects_summary=QLabel();self.effects_summary.setWordWrap(True);pr.addWidget(self.effects_summary)
         stylebox=QGroupBox('Phụ đề');form=QFormLayout(stylebox)
@@ -630,6 +632,7 @@ class Window(QMainWindow):
         self.work.setToolTip('Giảm tốc video trước khi tạo giọng để mỗi khoảng phụ đề có thêm thời gian đọc.')
         vf.addRow('Tốc độ video dựng ×',self.work);self.work_hint=QLabel();self.work_hint.setWordWrap(True);self.work_hint.setObjectName('muted');vf.addRow(self.work_hint)
         self.voice=QComboBox();[self.voice.addItem(k,v) for k,v in VOICES.items()];self.voice.currentIndexChanged.connect(self.settings_changed)
+        self.voice_filters=VoiceFilters(self.voice);vf.addRow('Lọc giọng Việt',self.voice_filters)
         self.voice_row=QWidget();vr=QHBoxLayout(self.voice_row);vr.setContentsMargins(0,0,0,0);vr.addWidget(self.voice,1)
         self.voice_preview_btn=self.button('▶ Nghe thử',self.preview_voice_dialog);vr.addWidget(self.voice_preview_btn);vf.addRow('Giọng mặc định',self.voice_row)
         self.voice.setMaxVisibleItems(14);self.cue_voice.setMaxVisibleItems(14)
@@ -669,7 +672,7 @@ class Window(QMainWindow):
         self.slow_video=QCheckBox('Câu dài: làm chậm video, giữ giọng');self.slow_video.toggled.connect(self.settings_changed);vf.addRow(self.slow_video)
         delete=self.button('Dọn giọng đọc đã tạo ▾',lambda:None);menu=QMenu(delete);menu.addAction('Xóa giọng các câu chọn…',self.delete_selected_voice);menu.addAction('Xóa toàn bộ giọng dự án…',self.delete_all_voice);delete.setMenu(menu);vf.addRow(delete)
         from .workflow_ui import fold_rows
-        fold_rows(voicebox,{self.work,self.work_hint,self.voice_row,self.voice_hint,self.tone,self.rate,self.voice_scope,self.generate_btn,self.voice_summary,tools,self.vol,self.mute_original,self.vvol,self.tts_mode,self.workers,self.remove_dialogue_btn},'Tách âm nền & thiết lập nâng cao')
+        fold_rows(voicebox,{self.work,self.work_hint,self.voice_filters,self.voice_row,self.voice_hint,self.tone,self.rate,self.voice_scope,self.generate_btn,self.voice_summary,tools,self.vol,self.mute_original,self.vvol,self.tts_mode,self.workers,self.remove_dialogue_btn},'Tách âm nền & thiết lập nâng cao')
         pr.addWidget(voicebox);pr.addStretch()
         exportbox=QGroupBox('Xuất video');ef=QFormLayout(exportbox)
         self.export_mode=QComboBox();self.export_mode.addItem('Nhanh · tệp lớn hơn','veryfast');self.export_mode.addItem('Nhanh nhất · tự dùng GPU','ultrafast');self.export_mode.addItem('Nén gọn · chậm','medium')
@@ -779,7 +782,7 @@ class Window(QMainWindow):
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
         self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.13'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.14'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -788,7 +791,7 @@ class Window(QMainWindow):
         self.tx.setValue(st['x']);self.ty.setValue(st['y']);self.tw.setValue(st['width']);self.mask_on.setChecked(m['enabled']);self.mask_mode.setCurrentIndex(max(0,self.mask_mode.findData(m['mode'])))
         self.mx.setValue(m['x']);self.my.setValue(m['y']);self.mw.setValue(m['w']);self.mh.setValue(m['h']);self.opacity.setValue(m['opacity'])
         self.tts_mode.setCurrentIndex(self.tts_mode.findData(p.tts_retry_mode));self.workers.setMaximum(6 if p.tts_retry_mode=='per_cue' else 2)
-        self.work.setValue(p.work_speed);self.final.setValue(p.final_speed);self.voice.setCurrentIndex(max(0,self.voice.findData(p.voice)));self.rate.setValue(p.tts_rate);self.workers.setValue(p.tts_workers);self.maxfit.setValue(p.max_fit);self.vol.setValue(p.original_volume*100);self.mute_original.setChecked(p.original_muted);self.vol.setEnabled(not p.original_muted);self.vvol.setValue(p.voice_volume*100)
+        self.work.setValue(p.work_speed);self.final.setValue(p.final_speed);self.voice_filters.select_voice(p.voice);self.rate.setValue(p.tts_rate);self.workers.setValue(p.tts_workers);self.maxfit.setValue(p.max_fit);self.vol.setValue(p.original_volume*100);self.mute_original.setChecked(p.original_muted);self.vol.setEnabled(not p.original_muted);self.vvol.setValue(p.voice_volume*100)
         self.pitch.setValue(p.tts_pitch);self.sync_tone();self.update_voice_controls()
         self.export_mode.setCurrentIndex(max(0,self.export_mode.findData(p.export_preset)))
         self.slow_video.setChecked(p.slow_video_for_voice);self.maxfit.setEnabled(not p.slow_video_for_voice)
@@ -1431,7 +1434,7 @@ class Window(QMainWindow):
         if id not in self.timeline.selected_ids:self.timeline.selected_ids={id} if c else set()
         self.timeline_selection_label.setText(f'{len(self.timeline.selected_ids)} câu chọn')
         if not c:self.start.clear();self.end.clear();self.text.clear();self.editor_dirty=False;self.editor_loading=False;return
-        self.start.setText(stamp(c.start));self.end.setText(stamp(c.end));self.text.setPlainText(c.text);self.cue_voice.setCurrentIndex(max(0,self.cue_voice.findData(c.voice)));self.cue_rate.setValue(c.tts_rate)
+        self.start.setText(stamp(c.start));self.end.setText(stamp(c.end));self.text.setPlainText(c.text);self.cue_voice_filters.select_voice(c.voice);self.cue_rate.setValue(c.tts_rate)
         self.editor_dirty=False;self.editor_loading=False
         for r,i in enumerate(self.model.indices):
             if self.p.cues[i].id==id:self.table.selectRow(r);self.table.scrollTo(self.model.index(r,0));break

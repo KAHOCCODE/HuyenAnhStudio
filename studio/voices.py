@@ -113,6 +113,24 @@ LOCAL_PRESETS = [
 VOICES = dict(EDGE_VOICES)
 VOICES.update({f"{name} · VieNeu · {description}": VIENEU_PREFIX + name
                for name, description in LOCAL_PRESETS})
+# Edge publishes a Vietnamese locale but no regional label in this catalogue.
+VOICE_METADATA = {
+    'vi-VN-NamMinhNeural': dict(gender='male', region='unknown'),
+    'vi-VN-HoaiMyNeural': dict(gender='female', region='unknown'),
+}
+for _name, _description in LOCAL_PRESETS:
+    _parts = _description.split(' · ')
+    VOICE_METADATA[VIENEU_PREFIX + _name] = dict(
+        gender={'Nam': 'male', 'Nữ': 'female'}[_parts[0]],
+        region={'Bắc': 'north', 'Trung': 'central', 'Nam': 'south'}[_parts[1]])
+
+
+def matching_voices(gender='', region=''):
+    return [(label, voice) for label, voice in VOICES.items()
+            if (not gender or VOICE_METADATA[voice]['gender'] == gender)
+            and (not region or VOICE_METADATA[voice]['region'] == region)]
+
+
 PITCH_PRESETS = [("Tự nhiên", 0.0), ("Cao nhẹ · dễ thương", 2.5),
                  ("Cao sáng", 1.5), ("Trầm ấm", -2.0)]
 

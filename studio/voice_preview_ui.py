@@ -8,6 +8,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 from .core import preview_voice
 from .voices import VOICES, PITCH_PRESETS, is_local_voice
+from .voice_filters_ui import VoiceFilters
 
 DEFAULT_SAMPLE = 'Xin chào, đây là giọng đọc bạn đang nghe thử. Chúc bạn có một ngày thật vui vẻ!'
 
@@ -19,7 +20,7 @@ class VoicePreviewDialog(QDialog):
         self.running = False
         self.close_after_job = False
         self.setWindowTitle('Nghe thử giọng đọc')
-        self.resize(640, 460)
+        self.resize(640, 510)
         layout = QVBoxLayout(self)
         note = QLabel('Chọn giọng, nhập một câu bất kỳ rồi bấm Nghe thử. Không cần video hoặc SRT. Các lựa chọn ở đây chỉ dùng để nghe thử.')
         note.setWordWrap(True)
@@ -30,6 +31,8 @@ class VoicePreviewDialog(QDialog):
             self.voice.addItem(label, value)
         self.voice.setCurrentIndex(max(0, self.voice.findData(voice or owner.p.voice)))
         self.voice.setMaxVisibleItems(12)
+        self.filters = VoiceFilters(self.voice)
+        form.addRow('Lọc giọng Việt', self.filters)
         form.addRow('Giọng đọc', self.voice)
         self.tone = QComboBox()
         for label, value in PITCH_PRESETS:
@@ -110,7 +113,7 @@ class VoicePreviewDialog(QDialog):
 
     def set_running(self, value):
         self.running = value
-        for widget in (self.voice, self.tone, self.pitch, self.rate, self.text, self.play, self.apply):
+        for widget in (self.filters, self.voice, self.tone, self.pitch, self.rate, self.text, self.play, self.apply):
             widget.setEnabled(not value)
         self.stop.setText('Hủy tạo giọng' if value else 'Dừng nghe')
         self.release.setEnabled(not value and self.owner.local_tts_session.ready)

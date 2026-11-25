@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3.13 — nghe thử và đổi giọng dùng chung mô hình
+# HUYỄN ẢNH Studio 0.3.14 — lọc giọng theo giới tính và vùng miền
 
 ## Cập nhật từ nhánh đang dùng
 
@@ -11,6 +11,14 @@ start.cmd
 ```
 
 Không cần đổi nhánh. Hai giọng Edge tiếp tục dùng bộ cài hiện có. Để dùng bộ giọng mới, đóng app và chạy **CAI-GIONG-MIEN-PHI.cmd** một lần trước khi mở lại `start.cmd`.
+
+## Bản 0.3.14: phân loại giọng Việt
+
+Trong **Lọc giọng Việt**, chọn **Giọng nam / Giọng nữ** và **Miền Bắc / Miền Trung / Miền Nam**. Có thể kết hợp cả hai, ví dụ **Giọng nữ + Miền Nam**, hoặc chọn **Tất cả** để bỏ lọc. Bộ lọc có ở giọng mặc định của dự án, giọng riêng từng câu và cửa sổ **Nghe thử**; số giọng phù hợp hiện ngay dưới bộ lọc.
+
+Lọc danh sách không tự đổi giọng đang dùng. Nếu giọng hiện tại nằm ngoài bộ lọc, app vẫn giữ nó trong mục **Đang chọn … (ngoài bộ lọc)** cho đến khi bạn chọn một giọng khác. Mở dự án, sửa tốc độ hoặc hoàn tác vẫn giữ đúng ID giọng đã lưu. Giọng mặc định riêng của câu cũng được giữ nguyên khi lọc.
+
+Giới tính và miền của VieNeu lấy từ mô tả các mẫu giọng đi kèm SDK 3.8.5. Hai giọng Edge chưa có nhãn vùng miền trong danh mục, được đặt vào **Chưa rõ miền**. Bản này tiếp tục dùng cách nghe thử và nạp mô hình của 0.3.13.
 
 ## Bản 0.3.13: nghe thử câu bất kỳ, giữ mô hình trong RAM
 
