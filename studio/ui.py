@@ -812,7 +812,7 @@ class Window(QMainWindow):
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
         self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.15'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.16'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -1375,7 +1375,7 @@ class Window(QMainWindow):
         def done(result):
             self.voices_done(result)
             if after:after()
-        self.start_job(lambda c,r:rebuild_voice_track(p,self.cache,c,r),done,'Ghép voice đã có — không gọi lại Edge TTS')
+        self.start_job(lambda c,r:rebuild_voice_track(p,self.cache,c,r),done,'Cập nhật voice để nghe · dùng lại câu và đoạn âm thanh không đổi')
 
     def play_state(self,state):
         self.play_button.setText('Ⅱ Dừng' if state==QMediaPlayer.PlayingState else '▶ Phát')
@@ -1416,13 +1416,17 @@ class Window(QMainWindow):
         self._sync_last_adjust=now
     def refresh_voice_state(self):
         self._view_revision=getattr(self,'_view_revision',0)+1
-        self._row_status_cache={};self._raw_audio_names=set()
+        self._row_status_cache={};self._raw_audio_names=set();audio_files={}
         try:
             with os.scandir(self.cache) as entries:
-                self._raw_audio_names={e.name for e in entries if re.fullmatch(r'[a-f0-9]{24}\.mp3',e.name) and e.is_file() and e.stat().st_size>0}
+                for e in entries:
+                    if re.fullmatch(r'[a-f0-9]{24}\.mp3',e.name) and e.is_file():
+                        stat=e.stat()
+                        if stat.st_size>0:audio_files[e.name]=[stat.st_size,stat.st_mtime_ns]
+                self._raw_audio_names=set(audio_files)
         except OSError:pass
         manifest=load_manifest(self.cache)
-        batch=None;ready=voice_ready(self.p,self.cache,manifest=manifest);self._voice_offset_ms=0
+        batch=None;ready=voice_ready(self.p,self.cache,manifest=manifest,audio_files=audio_files);self._voice_offset_ms=0
         was_ready=getattr(self,'voice_is_ready',False);self.voice_is_ready=ready
         self._cue_starts=sorted({c.start for c in self.p.cues})
         self._cue_index=IntervalIndex(self.p.cues)
@@ -2024,7 +2028,7 @@ class Window(QMainWindow):
             self.status.setText(f'Đã tạo / dùng lại {len(result.get("rows",[]))} câu · {missing} câu lỗi/thiếu. Phát video để nghe tại con trỏ.')
             if 'queue_completed' in result:self.status.setText(f'Đã chạy {result["queue_completed"]}/{result["queue_total"]} lượt · {missing} câu lỗi. Con trỏ video được giữ nguyên.')
         self.progress.setValue(100)
-        self.log('Chế độ giữ giọng: ghép voice để tính các đoạn video cần kéo dài.' if self.p.slow_video_for_voice else 'Chế độ ép giọng: câu màu cam có thể chồng sang câu sau.')
+        self.log('Chế độ giữ giọng: cập nhật đoạn thay đổi khi nghe; mốc hình được tính lại theo độ dài giọng.' if self.p.slow_video_for_voice else 'Chế độ ép giọng: câu màu cam có thể chồng sang câu sau.')
         if result.get('tts_errors'):self.log(f'{len(result["tts_errors"])} câu lỗi; mở Rà thiếu / thử lại câu lỗi trong khu Voice. Các câu thành công được giữ.')
         if result.get('generated_only') and result.get('attempted_ids'):
             ids=list(result['attempted_ids']);project=self.p;cache=self.cache

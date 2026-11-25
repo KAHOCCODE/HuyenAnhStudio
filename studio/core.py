@@ -10,6 +10,7 @@ from .composition import validate_composition, prepare_layers, artwork_filter, s
 from .tts import TTSCooldown, TTSServiceError, TTSDeferredRetry, fetch_voice, speech_text, context as _tts_context, edge_client
 from .voices import is_local_voice, local_voice_name, validate_pitch, LOCAL_CACHE_VERSION
 from .local_tts import LocalTTSSession
+from .audio_mix import update_mix, ready as mix_ready, read_json as read_cache_json
 
 RATE = 24000
 ROOT = Path(__file__).resolve().parent.parent
@@ -349,10 +350,19 @@ def atomic_json(path,data):
     path=Path(path);temp=path.with_suffix(path.suffix+'.tmp')
     temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8');temp.replace(path)
 
-def voice_ready(p,cache,manifest=None):
+def voice_ready(p,cache,manifest=None,audio_files=None):
     m=load_manifest(cache) if manifest is None else manifest
     if not m.get('signature'):return False
     if m.get('signature')!=signature(p) or not Path(m.get('track') or Path(cache)/'voice.wav').is_file():return False
+    if not mix_ready(cache,m.get('track') or Path(cache)/'voice.wav',m.get('mix_token')):return False
+    for name,expected in m.get('audio_sources',{}).items():
+        if audio_files is not None:
+            if audio_files.get(name)!=expected:return False
+        else:
+            try:
+                stat=(Path(cache)/name).stat()
+                if [stat.st_size,stat.st_mtime_ns]!=expected:return False
+            except OSError:return False
     missing=set(m.get('missing',[]))
     # A single-cue preview or a cancelled batch may have filled a formerly missing cue.
     return not any(c.id in missing and (Path(cache)/(raw_key(c,p)+'.mp3')).is_file() for c in p.cues)
@@ -380,7 +390,7 @@ def mix_track(entries,duration,out,cancel,progress=lambda x:None):
                 for e in active:
                     start=round(e['start']*RATE)
                     with wave.open(str(e['path']),'rb') as src:
-                        begin=max(pos,start);finish=min(end,start+src.getnframes())
+                        begin=max(pos,start);finish=min(end,start+src.getnframes(),round(e['end']*RATE))
                         if finish<=begin: continue
                         src.setpos(begin-start)
                         samples=np.frombuffer(src.readframes(finish-begin),dtype='<i2').astype(np.int32)
@@ -391,34 +401,8 @@ def mix_track(entries,duration,out,cancel,progress=lambda x:None):
     finally:
         tmp.unlink(missing_ok=True)
 
-def mix_track_cached(entries,duration,out,cache,cancel,progress=lambda n:None):
-    cache=Path(cache)/'mix-blocks';cache.mkdir(exist_ok=True)
-    total=round(duration*RATE);block_frames=30*RATE
-    if total*2>4_200_000_000:raise ValueError('Voice vượt giới hạn WAV 4 GB.')
-    buckets={}
-    for e in entries:
-        lo=max(0,math.floor(e['start']*RATE/block_frames));hi=min(math.ceil(total/block_frames),math.ceil(e['end']*RATE/block_frames))
-        for index in range(lo,hi):buckets.setdefault(index,[]).append(e)
-    out=Path(out);temp=out.with_suffix('.partial.wav')
-    try:
-        with wave.open(str(temp),'wb') as target:
-            target.setparams((1,2,RATE,0,'NONE','not compressed'))
-            for index,pos in enumerate(range(0,total,block_frames)):
-                if cancel.is_set():raise InterruptedError('Đã hủy ghép; các đoạn đã ghép được giữ.')
-                count=min(block_frames,total-pos);rows=buckets.get(index,[])
-                shifted=[dict(r,start=r['start']-pos/RATE,end=r['end']-pos/RATE) for r in rows]
-                fingerprint=[count,[(r['path'],r['start'],r['end'],Path(r['path']).stat().st_mtime_ns,Path(r['path']).stat().st_size) for r in shifted]]
-                key=hashlib.sha256(json.dumps(fingerprint).encode()).hexdigest()[:32];block=cache/(key+'.wav')
-                if not block.is_file():mix_track(shifted,count/RATE,block,cancel)
-                with wave.open(str(block),'rb') as src:
-                    while True:
-                        if cancel.is_set():raise InterruptedError('Đã hủy ghép voice.')
-                        data=src.readframes(RATE)
-                        if not data:break
-                        target.writeframesraw(data)
-                progress(100*(pos+count)/max(1,total))
-        temp.replace(out)
-    finally:temp.unlink(missing_ok=True)
+def mix_track_cached(entries,duration,out,cache,cancel,progress=lambda n:None,previous=None,file_stats=None):
+    return update_mix(entries,duration,out,cache,cancel,mix_track,progress,previous,file_stats)
 
 def cached_voice_exists(p,cache):
     cache=Path(cache)
@@ -428,9 +412,15 @@ def voice_complete(p,cache):
     m=load_manifest(cache)
     return voice_ready(p,cache) and m.get('complete',True)
 
-def prepare_voice_row(c,p,cache,cancel,known_duration=None):
+def prepare_voice_row(c,p,cache,cancel,known_duration=None,file_stats=None):
     cache=Path(cache);key=raw_key(c,p);raw=cache/(key+'.mp3')
-    if not raw.is_file():return None
+    def audio_stat(path):
+        if file_stats is not None:return file_stats.get(path.name)
+        try:
+            stat=path.stat();return [stat.st_size,stat.st_mtime_ns] if path.is_file() else None
+        except OSError:return None
+    raw_stat=audio_stat(raw)
+    if not raw_stat or not raw_stat[0]:return None
     dur=known_duration if known_duration is not None else probe(raw)['duration'];slot=(c.end-c.start)/p.work_speed
     required=max(1,dur/slot);applied=1. if p.slow_video_for_voice else min(required,p.max_fit)
     # Overlong speech remains audible in review, including its spill past the subtitle.
@@ -438,45 +428,89 @@ def prepare_voice_row(c,p,cache,cancel,known_duration=None):
     fitkey=hashlib.sha256(f'partial-v2|{key}|{length:.9f}|{applied:.9f}'.encode()).hexdigest()[:24]
     fitted=cache/(fitkey+'.wav')
     oldfit=cache/(hashlib.sha256(f'{key}|{slot:.9f}'.encode()).hexdigest()[:24]+'.wav')
-    if not p.slow_video_for_voice and ok and oldfit.is_file() and oldfit.stat().st_mtime_ns>=raw.stat().st_mtime_ns:fitted=oldfit
-    if fitted.is_file() and fitted.stat().st_mtime_ns<raw.stat().st_mtime_ns:
-        fitted=cache/(hashlib.sha256((fitkey+str(raw.stat().st_mtime_ns)).encode()).hexdigest()[:24]+'.wav')
-    if not fitted.is_file():
+    old_stat=audio_stat(oldfit) if not p.slow_video_for_voice and ok else None
+    if old_stat and old_stat[0]>44 and old_stat[1]>=raw_stat[1]:fitted=oldfit
+    fitted_stat=audio_stat(fitted)
+    if fitted_stat and fitted_stat[1]<raw_stat[1]:
+        fitted=cache/(hashlib.sha256((fitkey+str(raw_stat[1])).encode()).hexdigest()[:24]+'.wav');fitted_stat=audio_stat(fitted)
+    if not fitted_stat or fitted_stat[0]<=44:
         temp=fitted.with_suffix('.partial.wav')
         try:
             run([binary('ffmpeg'),'-y','-v','error','-i',raw,'-af',atempo(applied)+f',apad,atrim=duration={length:.9f}',
                  '-ar',str(RATE),'-ac','1','-c:a','pcm_s16le',temp],cancel)
             temp.replace(fitted)
+            if file_stats is not None:
+                stat=fitted.stat();file_stats[fitted.name]=[stat.st_size,stat.st_mtime_ns]
         finally:temp.unlink(missing_ok=True)
     return dict(id=c.id,start=c.start/p.work_speed,end=c.start/p.work_speed+length,
         cue_end=c.end/p.work_speed,raw=str(raw),path=str(fitted),duration=dur,factor=required,
         applied=applied,ok=ok,spill=max(0,length-slot))
 
+def collect_voice_rows(p,spoken,cache,cancel,report):
+    """Validate files once and reuse fitted rows across generation, review and restarts."""
+    cache=Path(cache);metadata_path=cache/'audio-metadata.json';rows_path=cache/'voice-rows.json'
+    metadata=read_cache_json(metadata_path);stored=read_cache_json(rows_path)
+    prepared=stored.get('rows',{}) if stored.get('schema')==1 else {}
+    files={};rows=[];missing=[];errors=[];sources={};reused=0;updated=0
+    report(0,f'Đối chiếu {len(spoken)} câu · dùng lại thông tin voice đã chuẩn bị…')
+    with os.scandir(cache) as entries:
+        for entry in entries:
+            if entry.name.endswith(('.mp3','.wav')) and entry.is_file():
+                stat=entry.stat();files[entry.name]=[stat.st_size,stat.st_mtime_ns]
+    metadata_changed=False;prepared_changed=False;last_report=time.monotonic()
+    for i,c in enumerate(spoken):
+        if cancel.is_set():raise InterruptedError('Đã hủy; MP3 và các câu đã chuẩn bị được giữ.')
+        raw=cache/(raw_key(c,p)+'.mp3');raw_stat=files.get(raw.name)
+        if not raw_stat or not raw_stat[0]:missing.append(c.id);continue
+        sources[raw.name]=raw_stat
+        fingerprint=[raw.name,*raw_stat,c.start,c.end,p.work_speed,p.max_fit,p.slow_video_for_voice]
+        cached=prepared.get(c.id,{})
+        row=cached.get('row',{})
+        fitted=Path(row.get('path',''))
+        matching=cached.get('input')==fingerprint
+        natural=(p.slow_video_for_voice and cached.get('input',[])[-1:]==[True] and cached.get('input',[])[:3]==fingerprint[:3])
+        if ((matching or natural) and fitted.parent==cache and
+                files.get(fitted.name)==cached.get('pcm') and cached.get('pcm',[0])[0]>44):
+            row=dict(row)
+            if not matching:
+                slot=(c.end-c.start)/p.work_speed;length=max(slot,row['duration'])
+                row.update(start=c.start/p.work_speed,end=c.start/p.work_speed+length,cue_end=c.end/p.work_speed,
+                           factor=max(1,row['duration']/slot),applied=1.,ok=True,spill=max(0,length-slot))
+                prepared[c.id]=dict(input=fingerprint,row=dict(row),pcm=cached['pcm']);prepared_changed=True
+            rows.append(row);reused+=1
+        else:
+            try:
+                item=metadata.get(raw.name,{})
+                duration=item.get('duration') if [item.get('size'),item.get('mtime')]==raw_stat else None
+                row=prepare_voice_row(c,p,cache,cancel,duration,files)
+                if row:
+                    name=Path(row['path']).name;pcm=files.get(name)
+                    if pcm is None:
+                        stat=Path(row['path']).stat();pcm=[stat.st_size,stat.st_mtime_ns]
+                    files[Path(row['path']).name]=pcm
+                    prepared[c.id]=dict(input=fingerprint,row=dict(row),pcm=pcm);prepared_changed=True
+                    rows.append(row);updated+=1
+                    item=dict(size=raw_stat[0],mtime=raw_stat[1],duration=row['duration'])
+                    if metadata.get(raw.name)!=item:metadata[raw.name]=item;metadata_changed=True
+                else:missing.append(c.id)
+            except InterruptedError:raise
+            except Exception as e:missing.append(c.id);errors.append(dict(id=c.id,error=str(e)))
+        now=time.monotonic()
+        if now-last_report>=.25 or i+1==len(spoken):
+            report(65*(i+1)/max(1,len(spoken)),f'Đối chiếu {i+1}/{len(spoken)} câu · dùng lại {reused} · chuẩn bị {updated}')
+            last_report=now
+    if metadata_changed:atomic_json(metadata_path,metadata)
+    if prepared_changed:atomic_json(rows_path,dict(schema=1,rows=prepared))
+    return dict(rows=rows,missing=missing,errors=errors,audio_sources=sources,
+                prepared_reused=reused,prepared_updated=updated,
+                pcm_files={r['path']:files[Path(r['path']).name] for r in rows})
+
 def rebuild_voice_track(p,cache,cancel,report,segment=None,include_overlap=False):
     cache=Path(cache);cache.mkdir(parents=True,exist_ok=True)
-    spoken=[c for c in p.cues if plain(c.text) and (segment is None or (c.start<segment[1] and (c.end>segment[0] if include_overlap else c.start>=segment[0])))];rows=[];missing=[];errors=[]
+    spoken=[c for c in p.cues if plain(c.text) and (segment is None or (c.start<segment[1] and (c.end>segment[0] if include_overlap else c.start>=segment[0])))]
     old=load_manifest(cache)
-    known={Path(r['raw']).name:r['duration'] for r in old.get('rows',[]) if r.get('duration',0)>0 and r.get('raw')}
-    metadata_path=cache/'audio-metadata.json'
-    try:metadata=json.loads(metadata_path.read_text(encoding='utf-8'))
-    except (OSError,ValueError):metadata={}
-    for i,c in enumerate(spoken):
-        if cancel.is_set():raise InterruptedError('Đã hủy ghép. MP3 đã tạo vẫn được giữ.')
-        report(65*i/max(1,len(spoken)),f'Ghép voice đã có: {i+1}/{len(spoken)}')
-        try:
-            raw=cache/(raw_key(c,p)+'.mp3');duration=None
-            if raw.exists():
-                stat=raw.stat();item=metadata.get(raw.name,{})
-                if item.get('size')==stat.st_size and item.get('mtime')==stat.st_mtime_ns:duration=item.get('duration')
-                elif raw.name in known:duration=known[raw.name]
-                if duration is None:duration=probe(raw)['duration']
-                metadata[raw.name]=dict(size=stat.st_size,mtime=stat.st_mtime_ns,duration=duration)
-            row=prepare_voice_row(c,p,cache,cancel,duration)
-        except InterruptedError:raise
-        except Exception as e:row=None;errors.append(dict(id=c.id,error=str(e)))
-        if row:rows.append(row)
-        else:missing.append(c.id)
-    atomic_json(metadata_path,metadata)
+    prepared=collect_voice_rows(p,spoken,cache,cancel,report)
+    rows,missing,errors=prepared['rows'],prepared['missing'],prepared['errors']
     if not rows and segment is None:raise ValueError('Chưa có MP3 phù hợp với nội dung/giọng hiện tại. Chọn vùng rồi tạo voice trước.')
     start,end=segment if segment is not None else (0,p.duration)
     timing=voice_timing(p,rows) if p.slow_video_for_voice else None
@@ -492,15 +526,21 @@ def rebuild_voice_track(p,cache,cancel,report,segment=None,include_overlap=False
     if include_overlap:sig=hashlib.sha256((sig+'review'+signature(p)).encode()).hexdigest()
     track=cache/(('batch-voice-' if segment is not None else 'voice-')+sig[:20]+'.wav')
     shifted=[dict(r,start=r['start']-offset,end=r['end']-offset) for r in rows]
+    mix_stats=None
     if segment is None:
-        mix_track_cached(shifted,total,track,cache,cancel,lambda n:report(65+n*.35,'Cập nhật âm thanh timeline · dùng lại đoạn không đổi…'))
+        previous=old if old.get('track') and old.get('duration') and not old.get('segment') else None
+        mix_stats=mix_track_cached(shifted,total,track,cache,cancel,lambda n:report(65+n*.35,'Cập nhật các đoạn âm thanh thay đổi · giữ đoạn còn lại…'),previous,prepared['pcm_files'])
+        track=Path(mix_stats['track'])
     else:mix_track(shifted,total,track,cancel,lambda n:report(65+n*.35,'Ghép voice vùng đang chọn…'))
     bad=sum(not r['ok'] for r in rows)
-    manifest=dict(signature=sig,schema=2,track=str(track),rows=rows,missing=missing,errors=errors,
+    manifest=dict(signature=sig,schema=3,track=str(track),rows=rows,missing=missing,errors=errors,
         complete=not missing and not bad,created=time.time(),duration=total,segment=segment,
         long_count=bad,missing_count=len(missing),tail=max(0,total-(end-start)/p.work_speed),timing=timing)
+    manifest.update(audio_sources=prepared['audio_sources'],prepared_reused=prepared['prepared_reused'],prepared_updated=prepared['prepared_updated'])
+    if mix_stats:manifest.update(mix_token=mix_stats['token'],mix_stats=mix_stats)
     if not include_overlap:atomic_json(batch_manifest_path(cache,segment) if segment is not None else cache/'voices.json',manifest)
-    report(100,f'Nghe được {len(rows)}/{len(spoken)} câu · {bad} câu tràn mốc · {len(missing)} câu chưa có voice')
+    detail=(f' · dùng lại {mix_stats["reused_blocks"]}/{mix_stats["total_blocks"]} đoạn 30s · cập nhật {mix_stats["changed_blocks"]} đoạn' if mix_stats else '')
+    report(100,f'Nghe được {len(rows)}/{len(spoken)} câu · {bad} câu tràn mốc · {len(missing)} câu chưa có voice'+detail)
     return manifest
 
 def voice_track_path(cache):
@@ -683,24 +723,8 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
             stored.pop(only_id,None);atomic_json(error_path,stored)
         return dict(sample=row)
     if not mix:
-        metadata_path=cache/'audio-metadata.json'
-        try:metadata=json.loads(metadata_path.read_text(encoding='utf-8'))
-        except (OSError,ValueError):metadata={}
-        rows=[]
-        for i,c in enumerate(spoken):
-            if cancel.is_set():raise InterruptedError('Đã hủy; MP3 đã tạo được giữ lại.')
-            raw=cache/(raw_key(c,p)+'.mp3')
-            if not raw.is_file() or not raw.stat().st_size:continue
-            try:
-                stat=raw.stat();item=metadata.get(raw.name,{})
-                dur=item.get('duration') if item.get('size')==stat.st_size and item.get('mtime')==stat.st_mtime_ns else None
-                row=prepare_voice_row(c,p,cache,cancel,dur)
-                if row:
-                    rows.append(row);metadata[raw.name]=dict(size=stat.st_size,mtime=stat.st_mtime_ns,duration=row['duration'])
-            except InterruptedError:raise
-            except Exception as e:errors.append(dict(id=c.id,error=str(e)))
-            report(65+35*(i+1)/len(spoken),f'Chuẩn bị câu {i+1}/{len(spoken)}')
-        atomic_json(metadata_path,metadata)
+        prepared=collect_voice_rows(p,spoken,cache,cancel,lambda n,msg:report(65+35*n/65,msg))
+        rows=prepared['rows'];errors.extend(prepared['errors'])
         error_path=cache/'voice-errors.json'
         try:stored=json.loads(error_path.read_text(encoding='utf-8'))
         except (OSError,ValueError):stored={}
@@ -710,7 +734,8 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
             c=by_id.get(item['id'])
             if c:stored[c.id]=dict(key=raw_key(c,p),error=item['error'])
         atomic_json(error_path,stored)
-        return dict(rows=rows,tts_errors=errors,generated_only=True,attempted_ids=[c.id for c in spoken],missing_count=len(spoken)-len(rows),long_count=sum(not r['ok'] for r in rows))
+        return dict(rows=rows,tts_errors=errors,generated_only=True,attempted_ids=[c.id for c in spoken],missing_count=len(spoken)-len(rows),long_count=sum(not r['ok'] for r in rows),
+                    prepared_reused=prepared['prepared_reused'],prepared_updated=prepared['prepared_updated'])
     result=rebuild_voice_track(p,cache,cancel,lambda n,msg:report(65+.35*n,msg),segment=segment)
     result['tts_errors']=errors
     atomic_json(batch_manifest_path(cache,segment) if segment is not None else cache/'voices.json',result)
@@ -1034,7 +1059,7 @@ def remove_cached_voice(p,cache,ids=None):
         raw=bool(re.fullmatch(r'[a-f0-9]{24}\.mp3',name))
         audio=bool(re.fullmatch(r'(?:[a-f0-9]{24}|voice-[a-f0-9]+|batch-voice-[a-f0-9]+)\.wav',name)) or name=='voice.wav'
         manifest=name=='voices.json' or bool(re.fullmatch(r'batch-\d+-\d+\.json',name))
-        if (raw and (all_voice or path.stem in keys)) or manifest or (all_voice and (audio or name in ('mix-blocks','audio-metadata.json','voice-errors.json'))):paths.append(path)
+        if (raw and (all_voice or path.stem in keys)) or manifest or (all_voice and (audio or name in ('mix-blocks','audio-metadata.json','voice-errors.json','voice-rows.json','mix-state.json','mix-transaction'))):paths.append(path)
     if not paths:return dict(affected=affected,count=0,backup=None)
     backup=cache/'voice-trash'/uuid.uuid4().hex;backup.mkdir(parents=True)
     moved=[]

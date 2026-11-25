@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3.15 — tối ưu phát và tua video dài
+# HUYỄN ẢNH Studio 0.3.16 — cập nhật voice theo phần thay đổi
 
 ## Cập nhật từ nhánh đang dùng
 
@@ -11,6 +11,18 @@ start.cmd
 ```
 
 Không cần đổi nhánh. Hai giọng Edge tiếp tục dùng bộ cài hiện có. Để dùng bộ giọng mới, đóng app và chạy **CAI-GIONG-MIEN-PHI.cmd** một lần trước khi mở lại `start.cmd`.
+
+## Bản 0.3.16: dùng lại voice đã chuẩn bị và bản ghép
+
+Tạo thêm giọng, sửa một câu hoặc mở lại dự án tiếp tục dùng các MP3 và thông tin câu đã chuẩn bị. Khi phát video, app đối chiếu các tệp bằng một lần đọc danh sách thư mục; không gọi FFprobe / FFmpeg cho từng câu đã có thông tin hợp lệ. Nhật ký báo số câu dùng lại và số câu cần chuẩn bị, thay vì ghi hàng chục nghìn dòng “Ghép voice đã có”.
+
+Âm thanh nghe trên timeline được chia thành các khối 30 giây. Không thay đổi lời / giọng / mốc thì dùng lại bản ghép, không ghi lại WAV toàn phim. Sửa một câu có cùng mốc và độ dài đọc sẽ cập nhật khối chứa câu đó; các khối khác được giữ nguyên tại chỗ. Nếu câu nằm qua ranh giới khối, cả hai khối liên quan được cập nhật. Lần ghép đầu vẫn cần tạo bản âm thanh đầy đủ.
+
+Khi độ dài giọng thay đổi, quy tắc giữ tốc độ đọc vẫn được áp dụng: tính lại các đoạn hình cần giãn và dịch các câu phía sau. Những khối bị thay đổi mốc cũng cần cập nhật; nếu ảnh hưởng phần lớn phim, app ghi lại bản WAV từ các khối đã có. Không bắt AI đọc lại các câu không đổi. Chỉ sửa mốc hoặc tốc độ dựng trong chế độ giữ giọng cũng dùng lại PCM tự nhiên đã chuẩn bị.
+
+Trước khi cập nhật trực tiếp một phần WAV, app lưu phần dữ liệu cần phục hồi. Hủy giữa chừng khôi phục bản ghép trước; nếu tiến trình bị tắt đột ngột, lần cập nhật kế tiếp phục hồi phần ghi dở trước khi tiếp tục. Không phát / xuất bản đang ghi dở. Cơ chế tăng âm trên 100% vẫn chuẩn bị bản có giới hạn đỉnh riêng như trước.
+
+Kiểm tra gồm 10.000 cue dùng lại toàn bộ thông tin mà không gọi FFprobe / FFmpeg; một WAV 6 giờ với sửa đổi chỉ ghi 1 khối trong 720 khối; so sánh PCM với ghép mới, kéo dài / rút ngắn, thiếu MP3, đổi độ dài lời đọc, hủy và tắt tiến trình khi đang ghi. Bản WAV 6 giờ trong kiểm tra là tệp tổng hợp, không phải video thực tế của người dùng. Dự án và MP3 cũ tiếp tục được dùng; lần cập nhật đầu xây thêm bộ nhớ đệm thông tin câu nếu chưa có.
 
 ## Bản 0.3.15: phát / tua dự án nhiều giờ
 

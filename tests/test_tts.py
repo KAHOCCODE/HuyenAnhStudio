@@ -127,9 +127,12 @@ class TTSTests(unittest.TestCase):
                 Path(path).write_bytes(b'new audio')
             finally:
                 with lock:active-=1
-        def row(c,*args):return dict(id=c.id,duration=.2,ok=True)
+        def row(c,*args):return dict(id=c.id,duration=.2,ok=True,path=str(root/'prepared.wav'))
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);cached=root/(raw_key(p.cues[0],p)+'.mp3');cached.write_bytes(b'existing audio')
+            import wave
+            with wave.open(str(root/'prepared.wav'),'wb') as target:
+                target.setparams((1,2,24000,0,'NONE','not compressed'));target.writeframes(b'\0\0'*4800)
             with patch('studio.core.TTSCooldown',return_value=gate),patch.object(edge_tts,'Communicate',return_value=SimpleNamespace(save=save)),patch('studio.core.probe',return_value={'duration':.2}),patch('studio.core.prepare_voice_row',side_effect=row):
                 result=generate_voices(p,root,threading.Event(),lambda n,msg:reports.append(msg),mix=False,parallel_segments=[(i*10,(i+1)*10) for i in range(7)])
             self.assertEqual(len(result['rows']),35);self.assertEqual(result['tts_errors'],[])
