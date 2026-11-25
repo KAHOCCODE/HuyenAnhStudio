@@ -565,7 +565,7 @@ class Window(QMainWindow):
     def __init__(self):
         super().__init__();self.p=Project();self.project_path=None;self.selected=None;self.busy=False;self.dirty=False;self.undo=[];self.redo=[];self.worker=None;self.rows={};self.syncing=False;self.editor_dirty=False;self.editor_loading=False;self.selection=None;self.range_play_end=None
         root=Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation));self.cache_root=root/'cache';self.cache_id=uuid.uuid4().hex;self.cache=self.cache_root/self.cache_id;self.cache.mkdir(parents=True,exist_ok=True)
-        self.local_tts_session=LocalTTSSession()
+        self.local_tts_session=LocalTTSPool()
         self.setWindowTitle('HUYỄN ẢNH Studio · Phụ đề & Lồng tiếng');self.resize(1320,720);self.setMinimumSize(1080,650)
         self.player=QMediaPlayer(self);self.audio=QAudioOutput(self);self.player.setAudioOutput(self.audio)
         self.voice_player=QMediaPlayer(self);self.voice_audio=QAudioOutput(self);self.voice_player.setAudioOutput(self.voice_audio)
@@ -697,12 +697,15 @@ class Window(QMainWindow):
         self.tts_mode=QComboBox();self.tts_mode.addItem('Tự giảm tải · tối đa 2','adaptive');self.tts_mode.addItem('Thử lại từng câu · tối đa 6','per_cue');vf.addRow('Chế độ gửi',self.tts_mode)
         self.tts_mode.setToolTip('Tự giảm tải: 5 lượt/câu và nghỉ chung khi lỗi dồn dập. Thử lại từng câu: 9 lượt/câu, chờ tăng dần riêng câu lỗi, không dừng cả lượt vì NoAudioReceived.')
         self.workers=self.spin(1,2,2,0,self.settings_changed);vf.addRow('Số câu tạo cùng lúc',self.workers);self.tts_mode.currentIndexChanged.connect(self.tts_mode_changed)
+        self.cue_limit=self.spin(0,1000000,0,0,self.settings_changed);self.cue_limit.setSpecialValueText('Tất cả');self.cue_limit.setKeyboardTracking(False)
+        self.cue_limit.setToolTip('Giới hạn số câu chưa có MP3 cần xử lý trong một lần bấm. 0 = tất cả. Câu đã có không chiếm giới hạn; bấm chạy tiếp để xử lý phần còn lại.')
+        vf.addRow('Câu mới tối đa / lần',self.cue_limit)
         self.maxfit=self.spin(1,3,1.6,2,self.settings_changed);vf.addRow('Giới hạn ép câu ×',self.maxfit)
         vf.addRow(self.button('Kiểm tra kết nối hai giọng',self.check_tts_connection))
         self.slow_video=QCheckBox('Câu dài: làm chậm video, giữ giọng');self.slow_video.toggled.connect(self.settings_changed);vf.addRow(self.slow_video)
         delete=self.button('Dọn giọng đọc đã tạo ▾',lambda:None);menu=QMenu(delete);menu.addAction('Xóa giọng các câu chọn…',self.delete_selected_voice);menu.addAction('Xóa toàn bộ giọng dự án…',self.delete_all_voice);delete.setMenu(menu);vf.addRow(delete)
         from .workflow_ui import fold_rows
-        fold_rows(voicebox,{self.work,self.work_hint,self.voice_filters,self.voice_row,self.voice_hint,self.tone,self.rate,self.voice_scope,self.generate_btn,self.voice_summary,tools,self.vol,self.mute_original,self.vvol,self.tts_mode,self.workers,self.remove_dialogue_btn},'Tách âm nền & thiết lập nâng cao')
+        fold_rows(voicebox,{self.work,self.work_hint,self.voice_filters,self.voice_row,self.voice_hint,self.tone,self.rate,self.voice_scope,self.generate_btn,self.voice_summary,tools,self.vol,self.mute_original,self.vvol,self.tts_mode,self.workers,self.cue_limit,self.remove_dialogue_btn},'Tách âm nền & thiết lập nâng cao')
         pr.addWidget(voicebox);pr.addStretch()
         exportbox=QGroupBox('Xuất video');ef=QFormLayout(exportbox)
         self.export_mode=QComboBox();self.export_mode.addItem('Nhanh · tệp lớn hơn','veryfast');self.export_mode.addItem('Nhanh nhất · tự dùng GPU','ultrafast');self.export_mode.addItem('Nén gọn · chậm','medium')
@@ -812,7 +815,7 @@ class Window(QMainWindow):
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
         self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.16'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.17'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -821,7 +824,7 @@ class Window(QMainWindow):
         self.tx.setValue(st['x']);self.ty.setValue(st['y']);self.tw.setValue(st['width']);self.mask_on.setChecked(m['enabled']);self.mask_mode.setCurrentIndex(max(0,self.mask_mode.findData(m['mode'])))
         self.mx.setValue(m['x']);self.my.setValue(m['y']);self.mw.setValue(m['w']);self.mh.setValue(m['h']);self.opacity.setValue(m['opacity'])
         self.tts_mode.setCurrentIndex(self.tts_mode.findData(p.tts_retry_mode));self.workers.setMaximum(6 if p.tts_retry_mode=='per_cue' else 2)
-        self.work.setValue(p.work_speed);self.final.setValue(p.final_speed);self.voice_filters.select_voice(p.voice);self.rate.setValue(p.tts_rate);self.workers.setValue(p.tts_workers);self.maxfit.setValue(p.max_fit);self.vol.setValue(p.original_volume*100);self.mute_original.setChecked(p.original_muted);self.vol.setEnabled(not p.original_muted);self.vvol.setValue(p.voice_volume*100)
+        self.work.setValue(p.work_speed);self.final.setValue(p.final_speed);self.voice_filters.select_voice(p.voice);self.rate.setValue(p.tts_rate);self.workers.setValue(p.tts_workers);self.cue_limit.setValue(p.tts_cue_limit);self.maxfit.setValue(p.max_fit);self.vol.setValue(p.original_volume*100);self.mute_original.setChecked(p.original_muted);self.vol.setEnabled(not p.original_muted);self.vvol.setValue(p.voice_volume*100)
         self.pitch.setValue(p.tts_pitch);self.sync_tone();self.update_voice_controls()
         self.export_mode.setCurrentIndex(max(0,self.export_mode.findData(p.export_preset)))
         self.slow_video.setChecked(p.slow_video_for_voice);self.maxfit.setEnabled(not p.slow_video_for_voice)
@@ -944,7 +947,11 @@ class Window(QMainWindow):
     def settings_changed(self,*args):
         if self.syncing:return
         if self.busy:self.load_controls();return
-        self.push_undo();self.p.work_speed=self.work.value();self.p.final_speed=self.final.value() if self.final.value()!=round(self.p.final_speed,4) else self.p.final_speed;self.p.voice=self.voice.currentData();self.p.tts_rate=round(self.rate.value());self.p.tts_pitch=self.pitch.value();self.p.tts_workers=round(self.workers.value());self.p.tts_retry_mode=self.tts_mode.currentData();self.p.max_fit=self.maxfit.value();self.p.original_volume=self.vol.value()/100;self.p.original_muted=self.mute_original.isChecked();self.vol.setEnabled(not self.p.original_muted);self.p.voice_volume=self.vvol.value()/100;self.p.slow_video_for_voice=self.slow_video.isChecked();self.maxfit.setEnabled(not self.p.slow_video_for_voice);self.sync_tone();self.update_voice_controls();self.changed()
+        self.push_undo()
+        if getattr(self,'_workers_local',False):self.p.vieneu_workers=round(self.workers.value())
+        else:self.p.tts_workers=round(self.workers.value())
+        self.p.tts_cue_limit=round(self.cue_limit.value())
+        self.p.work_speed=self.work.value();self.p.final_speed=self.final.value() if self.final.value()!=round(self.p.final_speed,4) else self.p.final_speed;self.p.voice=self.voice.currentData();self.p.tts_rate=round(self.rate.value());self.p.tts_pitch=self.pitch.value();self.p.tts_retry_mode=self.tts_mode.currentData();self.p.max_fit=self.maxfit.value();self.p.original_volume=self.vol.value()/100;self.p.original_muted=self.mute_original.isChecked();self.vol.setEnabled(not self.p.original_muted);self.p.voice_volume=self.vvol.value()/100;self.p.slow_video_for_voice=self.slow_video.isChecked();self.maxfit.setEnabled(not self.p.slow_video_for_voice);self.sync_tone();self.update_voice_controls();self.changed()
     def sync_tone(self):
         blocked=self.tone.blockSignals(True);index=self.tone.findData(self.pitch.value());self.tone.setCurrentIndex(index if index>=0 else self.tone.count()-1);self.tone.blockSignals(blocked)
     def tone_changed(self,*args):
@@ -954,14 +961,17 @@ class Window(QMainWindow):
         if value is not None:self.pitch.setValue(value)
     def update_voice_controls(self):
         local=any(is_local_voice(v) for v in [self.p.voice]+[c.voice for c in self.p.cues])
-        self.tts_mode.setEnabled(not local);self.workers.setEnabled(not local)
+        self.tts_mode.setEnabled(not local);self.workers.setEnabled(True)
+        blocked=self.workers.blockSignals(True);self.workers.setMaximum(MAX_LOCAL_WORKERS if local else 6 if self.p.tts_retry_mode=='per_cue' else 2)
+        self.workers.setValue(self.p.vieneu_workers if local else self.p.tts_workers);self.workers.blockSignals(blocked);self._workers_local=local
+        self.workers.setToolTip('VieNeu: 1–4 câu đồng thời; mỗi câu dùng bộ đọc riêng, tốn thêm RAM. Máy 8 GB nên bắt đầu 1–2. Số câu dùng chung cho mọi lượt.' if local else 'Tổng số câu Edge gửi cùng lúc cho mọi lượt.')
         self.voice.setToolTip(self.voice.currentText());self.cue_voice.setToolTip(self.cue_voice.currentText())
-        self.voice_hint.setText('VieNeu: chạy trên máy, không hạn mức ký tự/ngày. Mỗi lần đọc 1 câu để tiết kiệm RAM. Cài bộ giọng một lần; tải mô hình ở lần đầu. Hãy thử nghe một câu trước.' if local else 'Edge: 2 giọng trực tuyến, cần mạng và có thể gặp giới hạn dịch vụ. Có thêm 25 giọng VieNeu chạy trên máy trong danh sách.')
+        self.voice_hint.setText(f'VieNeu: chọn 1–4 câu đồng thời, đang đặt {self.p.vieneu_workers}. Mỗi bộ đọc dùng thêm RAM; máy 8 GB nên thử 1–2. Giới hạn câu mới mỗi lần ở bên dưới; 0 = tất cả. Không hạn mức ngày.' if local else 'Edge: 2 giọng trực tuyến, cần mạng và có thể gặp giới hạn dịch vụ. Có thêm 25 giọng VieNeu chạy trên máy trong danh sách.')
     def local_voice_help(self):
         QMessageBox.information(self,'25 giọng Việt miễn phí',
             'Đóng app, chạy CAI-GIONG-MIEN-PHI.cmd một lần rồi mở lại start.cmd.\n\n'
             'Chọn giọng có chữ VieNeu trong Giọng mặc định hoặc riêng từng câu. Chọn Kiểu tông giọng → Cao nhẹ · dễ thương nếu muốn nâng tông; đây là hiệu ứng, không phải giọng CapCut.\n\n'
-            'Lần đầu cần mạng để tải mô hình từ Hugging Face. Sau khi tải đủ, mô hình dùng lại trên máy, không API key, không hạn mức ngày. CPU đọc một câu/lần; tốc độ phụ thuộc máy và có thể chậm hơn Edge.\n\n'
+            'Lần đầu cần mạng để tải mô hình từ Hugging Face. Sau khi tải đủ, mô hình dùng lại trên máy, không API key, không hạn mức ngày. Có thể chọn 1–4 câu đồng thời; mỗi câu cần một bộ đọc riêng trong RAM. Máy 8 GB nên thử 1–2; tăng số câu không bảo đảm nhanh hơn.\n\n'
             'Bấm Nghe thử cạnh danh sách giọng hoặc Dự án → Nghe thử giọng để đọc một câu bất kỳ, không cần video / SRT. Mô hình được giữ trong RAM để đổi giọng; có thể giải phóng RAM trong cửa sổ nghe thử hoặc menu Dự án. Dừng rồi chạy tiếp dùng lại MP3 đã có.')
     def preview_voice_dialog(self,checked=False):
         if not self.guard():return
@@ -977,7 +987,7 @@ class Window(QMainWindow):
     def tts_mode_changed(self,*args):
         if self.syncing:return
         if self.busy:self.load_controls();return
-        blocked=self.workers.blockSignals(True);self.workers.setMaximum(6 if self.tts_mode.currentData()=='per_cue' else 2);self.workers.blockSignals(blocked)
+        blocked=self.workers.blockSignals(True);self.workers.setMaximum(MAX_LOCAL_WORKERS if getattr(self,'_workers_local',False) else 6 if self.tts_mode.currentData()=='per_cue' else 2);self.workers.blockSignals(blocked)
         self.settings_changed()
     def voice_volume_changed(self,*args):
         if self.syncing:return
@@ -1913,7 +1923,7 @@ class Window(QMainWindow):
         if not self.p.video or not self.p.cues:self.error('Mở video và SRT trước.');return
         dialog=QDialog(self);dialog.setWindowTitle('Voice · Chọn lượt cần chạy');dialog.resize(820,620)
         layout=QVBoxLayout(dialog)
-        note=QLabel('Chia lượt chỉ để tạo voice, không đổi vị trí phát video.\nCâu đã có được dùng lại. App thử 1 câu trước khi chạy nhiều câu; dừng hàng đợi nếu dịch vụ từ chối kết nối.');note.setWordWrap(True);layout.addWidget(note)
+        note=QLabel('Chia lượt chỉ để tạo voice, không đổi vị trí phát video.\nCâu đã có được dùng lại. Số câu đồng thời và giới hạn câu mới áp dụng chung cho tất cả lượt đã chọn.');note.setWordWrap(True);layout.addWidget(note)
         row=QHBoxLayout();row.addWidget(QLabel('Mỗi lượt'));minutes=QSpinBox();minutes.setRange(1,120);minutes.setSuffix(' phút');minutes.setValue(self.p.voice_batch_minutes);row.addWidget(minutes)
         for n in (10,20,30):row.addWidget(self.button(f'{n} phút',lambda checked=False,n=n:minutes.setValue(n)))
         layout.addLayout(row);table=QTableWidget(0,4);table.setHorizontalHeaderLabels(['Chạy','Từ','Đến','Voice đã có']);table.horizontalHeader().setSectionResizeMode(3,QHeaderView.Stretch);table.setEditTriggers(QAbstractItemView.NoEditTriggers);layout.addWidget(table,1)
@@ -1936,30 +1946,34 @@ class Window(QMainWindow):
         def first_rows():
             for i in range(table.rowCount()):table.item(i,0).setCheckState(Qt.Checked if i<first.value() else Qt.Unchecked)
         pick.addWidget(self.button('Chọn N lượt đầu',first_rows));layout.addLayout(pick)
-        parallel=QCheckBox('Chạy song song các lượt đã chọn');parallel.setChecked(True);layout.addWidget(parallel)
+        parallel=QCheckBox('Xếp xen kẽ các lượt đã chọn');parallel.setChecked(True);layout.addWidget(parallel)
         policy=QComboBox();policy.addItem('Tự giảm tải · tối đa 2','adaptive');policy.addItem('Thử lại từng câu · tối đa 6','per_cue');policy.setCurrentIndex(policy.findData(self.p.tts_retry_mode));layout.addWidget(policy)
-        pool=QHBoxLayout();pool.addWidget(QLabel('Tổng số câu đồng thời (mọi lượt)'));workers=QSpinBox();workers.setRange(1,6 if policy.currentData()=='per_cue' else 2);workers.setValue(self.p.tts_workers);pool.addWidget(workers);layout.addLayout(pool)
         local=any(is_local_voice(v) for v in [self.p.voice]+[c.voice for c in self.p.cues])
-        policy.setEnabled(not local);workers.setEnabled(not local)
+        pool=QHBoxLayout();pool.addWidget(QLabel('Tổng số câu đồng thời (mọi lượt)'));workers=QSpinBox();workers.setObjectName('batchVoiceWorkers');workers.setRange(1,MAX_LOCAL_WORKERS if local else 6 if policy.currentData()=='per_cue' else 2);workers.setValue(self.p.vieneu_workers if local else self.p.tts_workers);pool.addWidget(workers);layout.addLayout(pool)
+        quota_row=QHBoxLayout();quota_row.addWidget(QLabel('Câu mới tối đa cho lần bấm này'));quota=QSpinBox();quota.setObjectName('batchVoiceCueLimit');quota.setRange(0,1000000);quota.setSpecialValueText('Tất cả');quota.setValue(self.p.tts_cue_limit);quota_row.addWidget(quota);layout.addLayout(quota_row)
+        policy.setEnabled(not local)
         hint=QLabel();hint.setWordWrap(True);layout.addWidget(hint)
         def explain():
-            if local:
-                hint.setText('VieNeu chạy trên máy: dùng chung một mô hình CPU, mỗi lần đọc 1 câu kể cả chọn nhiều lượt. MP3 đã có được dùng lại; không hạn mức ký tự/ngày. Chế độ gửi / thử lại Edge không áp dụng cho giọng VieNeu.');return
             n=sum(table.item(i,0) is not None and table.item(i,0).checkState()==Qt.Checked for i in range(table.rowCount()));k=workers.value()
             if not parallel.isChecked():text=f'Tuần tự: tối đa {k} câu của lô 1, xong mới tới lô 2. Không có hai lô chạy cùng lúc.'
             else:text=f'Dùng chung: tối đa {k} câu cho tổng {n} lô. Xếp xen kẽ các lô, không nhân số kết nối theo số lượt.'
+            text+=f' Lần này xử lý tối đa {quota.value()} câu mới; câu đã có không chiếm giới hạn.' if quota.value() else ' Lần này xử lý tất cả câu chưa có trong các lượt đã chọn.'
+            if local:
+                hint.setText(text+'\nVieNeu: mỗi câu đồng thời dùng một bộ đọc CPU riêng và thêm RAM. Máy 8 GB nên thử 1–2 câu; tăng số câu không bảo đảm nhanh hơn. Không hạn mức ngày. Chế độ thử lại Edge không áp dụng cho VieNeu.');return
             detail='Thử lại từng câu tối đa 9 lần; chờ 1,5 giây × số lần lỗi cộng khoảng ngẫu nhiên. Câu lỗi nhường chỗ cho câu mới; không nghỉ hoặc dừng cả lượt chỉ vì NoAudioReceived.' if policy.currentData()=='per_cue' else 'Tối đa 2 kết nối; tăng sau 4 câu thành công. Tối đa 5 lần/câu; lỗi dồn dập nghỉ chung 10, 20, 40 giây và chỉ 1 câu thử phục hồi.'
             hint.setText(text+'\n'+detail+' Chế độ từng câu cũng thử lại HTTP 429 và chờ chung nếu dịch vụ gửi Retry-After. Lỗi xác thực / chứng chỉ dừng để kiểm tra. MP3 đã có được giữ.')
         def policy_changed():
-            workers.setMaximum(6 if policy.currentData()=='per_cue' else 2);explain()
+            workers.setMaximum(MAX_LOCAL_WORKERS if local else 6 if policy.currentData()=='per_cue' else 2);explain()
         policy.currentIndexChanged.connect(policy_changed)
-        parallel.toggled.connect(explain);workers.valueChanged.connect(explain);table.itemChanged.connect(explain);explain()
+        parallel.toggled.connect(explain);workers.valueChanged.connect(explain);quota.valueChanged.connect(explain);table.itemChanged.connect(explain);explain()
         stop=QCheckBox('Chế độ tuần tự: dừng sau lượt còn lỗi');stop.setChecked(True);stop.setEnabled(False);parallel.toggled.connect(lambda on:stop.setEnabled(not on));layout.addWidget(stop)
         def start():
             selected=[b for i,b in enumerate(batches) if table.item(i,0).checkState()==Qt.Checked]
             if not selected:note.setText('Hãy tích ít nhất một lượt cần chạy.');return
             self.p.voice_batch_minutes=minutes.value();self.dirty=True
-            self.p.tts_workers=workers.value();self.p.tts_retry_mode=policy.currentData();self.load_controls()
+            if local:self.p.vieneu_workers=workers.value()
+            else:self.p.tts_workers=workers.value()
+            self.p.tts_cue_limit=quota.value();self.p.tts_retry_mode=policy.currentData();self.load_controls()
             stop_on_error=stop.isChecked();parallel_run=parallel.isChecked();dialog.accept()
             self.run_voice_queue(selected,stop_on_error,parallel=parallel_run)
         actions=QHBoxLayout();actions.addWidget(self.button('Chạy các lượt đã chọn',start,True));actions.addWidget(self.button('Đóng',dialog.reject));layout.addLayout(actions)
@@ -1974,24 +1988,35 @@ class Window(QMainWindow):
             if parallel:
                 ids=interleaved_voice_ids(p,segments)
                 if not ids:return dict(rows=[],tts_errors=[],generated_only=True,missing_count=0,queue_completed=len(segments),queue_total=len(segments))
-                result=generate_voices(p,cache,cancel,lambda n,msg:report(n,f'Song song {len(segments)} lượt · '+msg),only_ids=ids,mix=False,parallel_segments=segments,local_session=self.local_tts_session)
-                result.update(queue_completed=len(segments),queue_total=len(segments));return result
-            rows={};errors=[];completed=0;attempted=[]
+                result=generate_voices(p,cache,cancel,lambda n,msg:report(n,f'Xen kẽ {len(segments)} lượt · '+msg),only_ids=ids,mix=False,parallel_segments=segments,local_session=self.local_tts_session)
+                deferred=set(result.get('deferred_ids',[]));starts=[c.start for c in p.cues if c.id in deferred]
+                result.update(queue_completed=sum(not any(a<=t<b for t in starts) for a,b in segments),queue_total=len(segments));return result
+            rows={};errors=[];completed=0;attempted=[];used=0;quota=p.tts_cue_limit
             for i,(a,b) in enumerate(segments):
                 if cancel.is_set():raise InterruptedError('Đã hủy; các câu đã tạo vẫn được giữ.')
+                if quota and used>=quota:break
                 ids=[c.id for c in p.cues if a<=c.start<b and plain(c.text)]
                 if ids:
-                    result=generate_voices(p,cache,cancel,lambda n,msg:report((i*100+n)/len(segments),f'Lượt {i+1}/{len(segments)} · '+msg),only_ids=ids,mix=False,local_session=self.local_tts_session)
-                    attempted.extend(ids);rows.update({r['id']:r for r in result['rows']});errors.extend(result.get('tts_errors',[]))
+                    result=generate_voices(p,cache,cancel,lambda n,msg:report((i*100+n)/len(segments),f'Lượt {i+1}/{len(segments)} · '+msg),only_ids=ids,mix=False,local_session=self.local_tts_session,new_limit=quota-used if quota else 0)
+                    used+=result.get('new_count',0);attempted.extend(result.get('attempted_ids',ids));rows.update({r['id']:r for r in result['rows']});errors.extend(result.get('tts_errors',[]))
                     completed+=1
                     if stop_on_error and result.get('missing_count'):break
+                    if result.get('deferred_count'):break
                 else:completed+=1
+                if quota and used>=quota:break
                 if i+1<len(segments) and cancel.wait(2):raise InterruptedError('Đã hủy giữa các lượt; voice được giữ.')
-            return dict(rows=list(rows.values()),tts_errors=errors,generated_only=True,attempted_ids=attempted,queue_completed=completed,queue_total=len(segments),missing_count=len(errors))
-        self.start_job(work,self.voices_done,('Tạo voice song song giữa các lượt' if parallel else 'Tạo voice tuần tự theo lượt')+' · giữ nguyên con trỏ video')
+            done_ids=set(attempted);deferred=[];keys=set()
+            for cue in p.cues:
+                if cue.id in done_ids or not plain(cue.text) or not any(a<=cue.start<b for a,b in segments):continue
+                key=raw_key(cue,p);raw=cache/(key+'.mp3')
+                if not raw.is_file() or not raw.stat().st_size:deferred.append(cue.id);keys.add(key)
+            deferred_set=set(deferred);starts=[c.start for c in p.cues if c.id in deferred_set]
+            completed=sum(not any(a<=t<b for t in starts) for a,b in segments)
+            return dict(rows=list(rows.values()),tts_errors=errors,generated_only=True,attempted_ids=attempted,queue_completed=completed,queue_total=len(segments),missing_count=len(errors),new_count=used,deferred_count=len(keys),deferred_ids=deferred)
+        self.start_job(work,self.voices_done,('Tạo voice xen kẽ các lượt' if parallel else 'Tạo voice tuần tự theo lượt')+' · giữ nguyên con trỏ video')
 
     def generate_selected(self):
-        ids=list(self.timeline.selected_ids)
+        ids=[c.id for c in self.p.cues if c.id in self.timeline.selected_ids]
         if not ids:self.status.setText('Chọn câu trên timeline trước; Ctrl+bấm để chọn nhiều câu.');return
         self.generate(only_ids=ids)
     def check_tts_connection(self):
@@ -2027,6 +2052,8 @@ class Window(QMainWindow):
         if result.get('generated_only'):
             self.status.setText(f'Đã tạo / dùng lại {len(result.get("rows",[]))} câu · {missing} câu lỗi/thiếu. Phát video để nghe tại con trỏ.')
             if 'queue_completed' in result:self.status.setText(f'Đã chạy {result["queue_completed"]}/{result["queue_total"]} lượt · {missing} câu lỗi. Con trỏ video được giữ nguyên.')
+            if result.get('deferred_count'):
+                self.status.setText(f'Đã xử lý {result.get("new_count",0)} câu mới · {missing} câu lỗi/thiếu · còn {result["deferred_count"]} câu chưa chạy. Bấm chạy tiếp để tiếp tục.')
         self.progress.setValue(100)
         self.log('Chế độ giữ giọng: cập nhật đoạn thay đổi khi nghe; mốc hình được tính lại theo độ dài giọng.' if self.p.slow_video_for_voice else 'Chế độ ép giọng: câu màu cam có thể chồng sang câu sau.')
         if result.get('tts_errors'):self.log(f'{len(result["tts_errors"])} câu lỗi; mở Rà thiếu / thử lại câu lỗi trong khu Voice. Các câu thành công được giữ.')

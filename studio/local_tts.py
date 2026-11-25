@@ -12,6 +12,7 @@ from .tts import TTSServiceError, TTSRequestError
 from .voices import local_voice_name
 
 ROOT = Path(__file__).resolve().parent.parent
+MAX_LOCAL_WORKERS = 4
 
 
 def local_python():
@@ -23,9 +24,10 @@ def local_python():
 
 
 class LocalTTSSession:
-    def __init__(self, python=None, worker=None):
+    def __init__(self, python=None, worker=None, threads=None):
         self.python = python
         self.worker = worker
+        self.threads = threads
         self.proc = None
         self.reader = None
         self.events = queue.Queue()
@@ -46,6 +48,8 @@ class LocalTTSSession:
                    GRADIO_ANALYTICS_ENABLED='False', TOKENIZERS_PARALLELISM='false', CUDA_VISIBLE_DEVICES='-1')
         # Shared across projects. SDK downloads public model files on first use only.
         env.setdefault('HF_HOME', str(ROOT / 'models' / 'vieneu'))
+        if self.threads is not None:
+            env['HUYENANH_TTS_THREADS'] = str(self.threads)
         self.errors = tempfile.TemporaryFile()
         try:
             self.proc = subprocess.Popen([str(python), '-u', str(self.worker or ROOT / 'tools' / 'vieneu_worker.py')],
@@ -123,6 +127,16 @@ class LocalTTSSession:
         finally:
             self.lock.release()
 
+    def warmup(self, cancel, report=None):
+        while not self.lock.acquire(timeout=.1):
+            if cancel.is_set():raise InterruptedError('Đã hủy nạp giọng.')
+        try:
+            if not self.ready:
+                self.close()
+                self._start(cancel, report)
+        finally:
+            self.lock.release()
+
     def _speak(self, text, voice, target, cancel, report=None):
         name = local_voice_name(voice)
         if not self.ready:
@@ -160,4 +174,77 @@ class LocalTTSSession:
         self.reader = None
         self.errors = None
         self.events = queue.Queue()
+
+
+class LocalTTSPool:
+    """Independent model processes: one request per pipe, bounded total concurrency."""
+    def __init__(self, factory=None):
+        self.factory = factory or LocalTTSSession
+        self.sessions = []
+        self.available = []
+        self.condition = threading.Condition()
+        self.loading = threading.Lock()
+        self.stopped = threading.Event()
+        self.active = 0
+
+    @property
+    def ready(self):
+        return any(session.ready for session in self.sessions)
+
+    def configure(self, workers):
+        if isinstance(workers,bool) or not isinstance(workers,int) or not 1<=workers<=MAX_LOCAL_WORKERS:
+            raise ValueError('VieNeu hỗ trợ từ 1 đến 4 câu đồng thời.')
+        with self.condition:
+            if self.active:raise RuntimeError('Đợi lượt đọc hiện tại xong trước khi đổi số bộ đọc.')
+            self.stopped.clear()
+            for session in self.sessions[workers:]:session.close()
+            self.sessions = self.sessions[:workers]
+            threads = max(1,min(4,(os.cpu_count() or 4)//(2*workers)))
+            while len(self.sessions)<workers:
+                self.sessions.append(self.factory(threads=threads))
+            self.available = list(self.sessions)
+            self.condition.notify_all()
+
+    def speak(self, text, voice, target, cancel, report=None):
+        pool = self
+        class StopSignal:
+            def is_set(self):return cancel.is_set() or pool.stopped.is_set()
+        stop = StopSignal()
+        def check_stop():
+            if cancel.is_set():raise InterruptedError('Đã hủy tạo giọng.')
+            if self.stopped.is_set():raise TTSServiceError('Một bộ đọc VieNeu đã lỗi; dừng các câu đang chờ. MP3 đã có được giữ.')
+        if not self.sessions:self.configure(1)
+        with self.condition:
+            while not self.available:
+                check_stop()
+                self.condition.wait(.1)
+            check_stop()
+            # A preview or a cached resume does not load otherwise idle models.
+            session = next((s for s in self.available if s.ready),self.available[0])
+            self.available.remove(session);self.active+=1
+        try:
+            # Serialize cold starts; already loaded models can infer concurrently.
+            if not session.ready:
+                while not self.loading.acquire(timeout=.1):
+                    check_stop()
+                try:
+                    if not session.ready:session.warmup(stop,report)
+                finally:self.loading.release()
+            session.speak(text,voice,target,stop,report)
+        except InterruptedError:
+            if not cancel.is_set() and self.stopped.is_set():
+                raise TTSServiceError('Một bộ đọc VieNeu đã lỗi; các câu đang đọc được dừng. MP3 đã có được giữ.') from None
+            raise
+        except TTSServiceError:
+            self.stopped.set()
+            raise
+        finally:
+            with self.condition:
+                self.active-=1;self.available.append(session);self.condition.notify_all()
+
+    def close(self):
+        self.stopped.set()
+        for session in self.sessions:session.close()
+        with self.condition:
+            self.sessions=[];self.available=[];self.condition.notify_all()
 

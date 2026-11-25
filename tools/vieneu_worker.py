@@ -80,8 +80,9 @@ def main():
             from vieneu import Vieneu
             # fp32 works on the user's Skylake CPU; int8 requires newer VNNI CPUs.
             emit({'event': 'phase', 'message': 'Đang nạp mô hình VieNeu trên CPU'})
+            cpu_threads = int(os.environ.get('HUYENANH_TTS_THREADS') or min(4,max(1,(os.cpu_count() or 4)//2)))
             tts = Vieneu(mode='v3turbo', backend='onnx', device='cpu', precision='fp32',
-                         threads=min(4, max(1, (os.cpu_count() or 4) // 2)))
+                         threads=max(1,min(4,cpu_threads)))
         emit({'event': 'phase', 'message': 'VieNeu đã sẵn sàng · giữ mô hình trong RAM để đổi giọng nhanh'})
         emit({'event': 'ready'})
     except Exception as error:

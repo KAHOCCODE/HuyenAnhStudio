@@ -9,7 +9,7 @@ from .video_effects import settings as effect_settings, output_size, picture_fil
 from .composition import validate_composition, prepare_layers, artwork_filter, sidebar_settings, subtitle_area
 from .tts import TTSCooldown, TTSServiceError, TTSDeferredRetry, fetch_voice, speech_text, context as _tts_context, edge_client
 from .voices import is_local_voice, local_voice_name, validate_pitch, LOCAL_CACHE_VERSION
-from .local_tts import LocalTTSSession
+from .local_tts import LocalTTSSession, LocalTTSPool, MAX_LOCAL_WORKERS
 from .audio_mix import update_mix, ready as mix_ready, read_json as read_cache_json
 
 RATE = 24000
@@ -53,6 +53,8 @@ class Project:
     tts_rate: int = 0
     tts_pitch: float = 0.0
     tts_workers: int = 2
+    vieneu_workers: int = 1
+    tts_cue_limit: int = 0
     tts_retry_mode: str = 'adaptive'
     voice_batch_minutes: int = 10
     voice_batch_index: int = 0
@@ -92,6 +94,8 @@ class Project:
         p = cls(**data)
         if not (.25 <= p.work_speed <= 2 and .25 <= p.final_speed <= 4): raise ValueError('Tốc độ không hợp lệ.')
         if not 1<=p.tts_workers<=6:raise ValueError('Số luồng TTS phải trong khoảng 1–6.')
+        if isinstance(p.vieneu_workers,bool) or not isinstance(p.vieneu_workers,int) or not 1<=p.vieneu_workers<=MAX_LOCAL_WORKERS:raise ValueError('Số câu VieNeu đồng thời phải từ 1 đến 4.')
+        if isinstance(p.tts_cue_limit,bool) or not isinstance(p.tts_cue_limit,int) or not 0<=p.tts_cue_limit<=1000000:raise ValueError('Giới hạn câu mỗi lần phải từ 0 đến 1.000.000; 0 là tất cả.')
         if p.tts_retry_mode not in ('adaptive','per_cue'):raise ValueError('Chế độ thử lại giọng không hợp lệ.')
         validate_pitch(p.tts_pitch)
         for voice in [p.voice]+[c.voice for c in p.cues]:
@@ -587,7 +591,7 @@ def prepare_voice_playback(source,gain,cache,cancel,report):
     return result
 
 
-def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=None,mix=True,parallel_segments=None,local_session=None):
+def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=None,mix=True,parallel_segments=None,local_session=None,new_limit=None):
     cache=Path(cache);cache.mkdir(parents=True,exist_ok=True)
     validate_pitch(p.tts_pitch)
     chosen=set(only_ids) if only_ids is not None else None
@@ -599,11 +603,13 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
         if is_local_voice(c.voice or p.voice):local_voice_name(c.voice or p.voice)
     from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
     local=any(is_local_voice(c.voice or p.voice) for c in spoken)
-    # A single persistent CPU model serves all cues, including interleaved batches.
-    capacity=1 if local else max(1,min(6 if p.tts_retry_mode=='per_cue' else 2,p.tts_workers))
-    gate=TTSCooldown(capacity,spacing=.2,mode='per_cue') if p.tts_retry_mode=='per_cue' else TTSCooldown(capacity)
+    # Each CPU model has its own pipe; the chosen capacity is shared by all batches.
+    if isinstance(p.vieneu_workers,bool) or not isinstance(p.vieneu_workers,int) or not 1<=p.vieneu_workers<=MAX_LOCAL_WORKERS:raise ValueError('Số câu VieNeu đồng thời phải từ 1 đến 4.')
+    capacity=(1 if only_id else p.vieneu_workers) if local else max(1,min(6 if p.tts_retry_mode=='per_cue' else 2,p.tts_workers))
+    edge_capacity=min(capacity,6 if p.tts_retry_mode=='per_cue' else 2,p.tts_workers)
+    gate=TTSCooldown(edge_capacity,spacing=.2,mode='per_cue') if p.tts_retry_mode=='per_cue' else TTSCooldown(edge_capacity)
     keep_local_session=local_session is not None
-    if local_session is None:local_session=LocalTTSSession()
+    if local_session is None:local_session=LocalTTSPool(factory=LocalTTSSession) if local and capacity>1 else LocalTTSSession()
     errors=[];unique={raw_key(c,p):c for c in spoken};pending=[];done=0;total=len(unique);began=time.monotonic()
     cue_numbers={c.id:i+1 for i,c in enumerate(p.cues)}
     key_cues={key:[] for key in unique}
@@ -614,6 +620,18 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
     for key,c in unique.items():
         if (cache/(key+'.mp3')).is_file() and (cache/(key+'.mp3')).stat().st_size>0:done+=1
         else:pending.append((key,c))
+    quota=p.tts_cue_limit if new_limit is None else new_limit
+    if isinstance(quota,bool) or not isinstance(quota,int) or not 0<=quota<=1000000:raise ValueError('Giới hạn câu không hợp lệ.')
+    deferred_keys={key for key,_ in pending[quota:]} if quota and not only_id else set()
+    deferred_ids=[c.id for c in spoken if raw_key(c,p) in deferred_keys]
+    if deferred_keys:
+        deferred_set=set(deferred_ids);pending=pending[:quota];spoken=[c for c in spoken if c.id not in deferred_set]
+        unique={key:c for key,c in unique.items() if key not in deferred_keys}
+        total=len(unique)
+    new_count=len(pending)
+    deferred_count=len(deferred_keys)
+    if local and pending and isinstance(local_session,LocalTTSPool) and not only_id:local_session.configure(capacity)
+    if local and capacity>1 and not isinstance(local_session,LocalTTSPool):raise ValueError('Đọc nhiều câu VieNeu cần bộ đọc song song của ứng dụng.')
     if pending and (local or p.tts_pitch):
         encoders=run([binary('ffmpeg'),'-hide_banner','-encoders'],cancel,capture=True)
         if 'libmp3lame' not in encoders:raise TTSServiceError('FFmpeg thiếu libmp3lame để lưu giọng VieNeu / đổi tông. Cài FFmpeg bản đầy đủ rồi thử lại; MP3 đã có được giữ nguyên.')
@@ -621,13 +639,14 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
     version=edge_client().__version__ if edge_pending else 'không cần kết nối'
     policy='Thử lại từng câu · tối đa 9 lần/câu' if p.tts_retry_mode=='per_cue' else 'Tự giảm tải / nghỉ chung'
     if local:
-        message='VieNeu 3.8.5 · CPU · không hạn mức ngày · 1 câu/lần'
+        message=f'VieNeu 3.8.5 · CPU · không hạn mức ngày · tối đa {capacity} câu đồng thời'
         if edge_pending:message+=f' + Edge TTS {version}'
         message+=f' · Dùng lại {done}/{total} MP3'
     else:message=f'Edge TTS {version} · Dùng lại {done}/{total} MP3 · {policy} · thử 1 câu trước, tối đa {capacity} kết nối cho toàn bộ lượt'
     report(65*done/max(1,total),message)
+    if quota and not only_id:report(65*done/max(1,total),f'Lần này xử lý tối đa {quota} câu mới · chọn {new_count} · còn {deferred_count} câu cho lần sau · MP3 đã có được dùng lại')
     if local and pending and local_session.ready:
-        report(65*done/max(1,total),'Dùng lại mô hình VieNeu trong RAM · đổi giọng không nạp lại mô hình.')
+        report(65*done/max(1,total),'Dùng lại bộ đọc VieNeu đã sẵn sàng trong RAM · bộ đọc thêm chỉ nạp khi cần.')
     def fetch_one(pair):
         key,c,attempts=pair;raw=cache/(key+'.mp3');temp=raw.with_suffix('.partial.mp3')
         base=cache/(synthesis_key(c,p)+'.mp3');base_temp=base.with_suffix('.synth.partial.mp3');wav=base.with_suffix('.partial.wav')
@@ -710,9 +729,9 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
                         if only_id:raise RuntimeError(error)
                         errors.extend(dict(id=c.id,error=error) for c in key_cues[key])
                     elapsed=round(time.monotonic()-began)
-                    report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(retries)} câu chờ thử lại · '+('CPU 1 câu/lần' if local else f'tối đa {gate.limit} kết nối')+f' · {len(errors)} lỗi'+(f' · Câu {cue_numbers[id]} ({stamp(unique[key].start)}) · '+error if error else ''))
+                    report(65*done/max(1,total),f'Voice {done}/{total} · {elapsed}s · {len(retries)} câu chờ thử lại · '+(f'CPU tối đa {capacity} câu đồng thời' if local else f'tối đa {gate.limit} kết nối')+f' · {len(errors)} lỗi'+(f' · Câu {cue_numbers[id]} ({stamp(unique[key].start)}) · '+error if error else ''))
     finally:
-        if not keep_local_session or cancel.is_set():local_session.close()
+        if not keep_local_session or cancel.is_set() or isinstance(local_session,LocalTTSPool) and local_session.stopped.is_set():local_session.close()
         atomic_json(metadata_path,metadata)
     if only_id:
         row=prepare_voice_row(spoken[0],p,cache,cancel)
@@ -735,9 +754,11 @@ def generate_voices(p,cache,cancel,report,only_id=None,only_ids=None,segment=Non
             if c:stored[c.id]=dict(key=raw_key(c,p),error=item['error'])
         atomic_json(error_path,stored)
         return dict(rows=rows,tts_errors=errors,generated_only=True,attempted_ids=[c.id for c in spoken],missing_count=len(spoken)-len(rows),long_count=sum(not r['ok'] for r in rows),
-                    prepared_reused=prepared['prepared_reused'],prepared_updated=prepared['prepared_updated'])
+                    prepared_reused=prepared['prepared_reused'],prepared_updated=prepared['prepared_updated'],
+                    new_count=new_count,deferred_count=deferred_count,deferred_ids=deferred_ids)
     result=rebuild_voice_track(p,cache,cancel,lambda n,msg:report(65+.35*n,msg),segment=segment)
     result['tts_errors']=errors
+    result.update(new_count=new_count,deferred_count=deferred_count,deferred_ids=deferred_ids)
     atomic_json(batch_manifest_path(cache,segment) if segment is not None else cache/'voices.json',result)
     return result
 
