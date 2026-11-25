@@ -15,6 +15,7 @@ from .tts import check_voice_service
 from .voices import VOICES, PITCH_PRESETS
 from .voice_preview_ui import VoicePreviewDialog
 from .voice_filters_ui import VoiceFilters
+from .playback_index import IntervalIndex, indexed_snap
 from .effects_ui import EffectsDialog
 from .result_player import ResultPlayer
 from .layers_ui import LayersPanel
@@ -123,6 +124,7 @@ class CueModel(QAbstractTableModel):
         if role==Qt.DisplayRole and orientation==Qt.Horizontal: return ['# / Mốc gốc','Phụ đề tiếng Việt','Voice'][section]
     def data(self,index,role=Qt.DisplayRole):
         if not index.isValid(): return
+        if role not in (Qt.DisplayRole,Qt.ToolTipRole,Qt.ForegroundRole):return
         i=self.indices[index.row()];c=self.win.p.cues[i];status,label=self.win.row_status(c)
         if role==Qt.DisplayRole: return [f'{i+1} · {stamp(c.start)}',c.text.replace('\n',' ') or '— Mục trống —',label][index.column()]
         if role==Qt.ToolTipRole: return f'{stamp(c.start)} → {stamp(c.end)}\n{c.text}\n{label}'
@@ -329,6 +331,7 @@ class Timeline(QWidget):
     seek=Signal(float);chosen=Signal(str)
     def __init__(self,win):
         super().__init__();self.win=win;self.zoom=70.;self.offset=0.;self.cursor=0.;self.drag=None;self.selected_ids=set();self.setFocusPolicy(Qt.StrongFocus);self.setMinimumHeight(132);self.setMouseTracking(True)
+        self._voice_ends={};self._block_cache_key=None;self._block_cache=[];self.time_index=None
     def x(self,t):return 108+(t/1-self.offset)*self.zoom
     def source(self,x):return max(0,(self.offset+(x-108)/self.zoom))
     def paintEvent(self,event):
@@ -350,27 +353,48 @@ class Timeline(QWidget):
             p.fillRect(QRectF(self.x(a),28,(b-a)*self.zoom,96),QColor(76,137,199,28))
             p.setPen(QPen(QColor('#679fc8'),1,Qt.DashLine))
             for bound in (a,b):p.drawLine(int(self.x(bound)),25,int(self.x(bound)),124)
-        lo=self.source(108);hi=self.source(self.width())
-        for c in self.win.p.cues:
-            if c.start>hi:continue
-            voice_end=self.voice_end(c)
-            if voice_end<lo:continue
-            status,_=self.win.row_status(c);row=self.win.rows.get(c.id)
-            if not self.win.p.slow_video_for_voice and row and status in ('ready','cached','long'):
-                required=max(1,row['duration']/((c.end-c.start)/self.win.p.work_speed))
-                voice_end=max(c.end,c.start+row['duration']/min(required,self.win.p.max_fit)*self.win.p.work_speed)
-            if voice_end<lo:continue
-            if c.start>hi:continue
-            x=self.x(c.start);w=max(2,(c.end-c.start)*self.zoom)
+        for x,w,voice_width,status,selected,label in self.blocks():
             for y,color in [(63,'#226b68'),(95,'#9f5b4a' if status=='long' else '#6d509a' if status in ('ready','cached') else '#303643')]:
-                block_width=max(2,(voice_end-c.start)*self.zoom) if y==95 else w
-                rect=QRectF(x,y,block_width,24);p.setPen(QPen(QColor('#f1c885') if c.id in self.selected_ids else QColor(color),2));p.setBrush(QColor(color));p.drawRoundedRect(rect,3,3)
-                if w>30:
-                    p.setPen(QColor('#e6f0f5'));p.drawText(rect.adjusted(5,0,-4,0),Qt.AlignVCenter,QFontMetricsF(p.font()).elidedText(plain(c.text) or 'Trống',Qt.ElideRight,int(w-9)))
+                block_width=voice_width if y==95 else w
+                rect=QRectF(x,y,block_width,24);p.setPen(QPen(QColor('#f1c885') if selected else QColor(color),2));p.setBrush(QColor(color));p.drawRoundedRect(rect,3,3)
+                if label:
+                    p.setPen(QColor('#e6f0f5'));p.drawText(rect.adjusted(5,0,-4,0),Qt.AlignVCenter,QFontMetricsF(p.font()).elidedText(label,Qt.ElideRight,int(w-9)))
         if self.win.selection:
             a,b=self.win.selection;r=QRectF(self.x(a),25,(b-a)*self.zoom,99)
             p.fillRect(r,QColor(115,190,255,45));p.setPen(QPen(QColor('#83cfff'),2));p.setBrush(Qt.NoBrush);p.drawRect(r)
         x=self.x(self.cursor);p.setPen(QPen(QColor('#fae0a2'),2));p.drawLine(int(x),23,int(x),self.height());p.restore()
+    def rebuild_index(self):
+        self._voice_ends={}
+        self._voice_ends={c.id:self._compute_voice_end(c) for c in self.win.p.cues}
+        self.time_index=IntervalIndex(self.win.p.cues,end=lambda c:max(c.end,self._voice_ends[c.id]))
+        self._block_cache_key=None
+    def visible_cues(self,lo,hi):
+        if self.time_index is None or self.time_index.source is not self.win.p.cues:self.rebuild_index()
+        cues=self.time_index.intersect(lo,hi)
+        moving=self.drag.get('snapshot',{}) if self.drag else {}
+        if moving:
+            cues=[c for c in cues if c.id not in moving]
+            cues.extend(c for id in moving if (c:=self.time_index.by_id.get(id)) is not None and c.start<=hi and max(c.end,self.voice_end(c))>=lo)
+            cues.sort(key=lambda c:c.start)
+        return cues
+    def blocks(self):
+        key=(getattr(self.win,'_view_revision',0),id(self.win.p.cues),self.offset,self.zoom,self.width(),frozenset(self.selected_ids))
+        if not self.drag and key==self._block_cache_key:return self._block_cache
+        result=[];dense={};priority={'empty':0,'none':1,'cached':2,'ready':2,'long':3}
+        for c in self.visible_cues(self.source(108),self.source(self.width())):
+            x=self.x(c.start);width=(c.end-c.start)*self.zoom
+            voice_width=max(2,(self.voice_end(c)-c.start)*self.zoom)
+            status=self.win.row_status(c)[0];selected=c.id in self.selected_ids
+            if width<3:
+                column=round(x)
+                if column in dense:
+                    block=dense[column];block[1]=max(block[1],x+max(2,width)-column);block[2]=max(block[2],x+voice_width-column);block[4]|=selected
+                    if priority.get(status,0)>priority.get(block[3],0):block[3]=status
+                else:dense[column]=[column,max(2,width),voice_width,status,selected,'']
+            else:result.append([x,max(2,width),voice_width,status,selected,plain(c.text) or 'Trống' if width>30 else ''])
+        result.extend(dense.values())
+        if not self.drag:self._block_cache_key=key;self._block_cache=result
+        return result
     def choose(self,ids,primary=None):
         if self.win.editor_dirty and not self.win.commit_editor():return
         ids=set(ids)&{c.id for c in self.win.p.cues}
@@ -378,24 +402,28 @@ class Timeline(QWidget):
         self.win.select_id(primary);self.selected_ids=ids
         self.win.timeline_selection_label.setText(f'{len(ids)} câu chọn');self.update()
     def voice_end(self,c):
+        moving=self.drag.get('snapshot',{}) if self.drag else {}
+        if c.id not in moving and c.id in self._voice_ends:return self._voice_ends[c.id]
+        return self._compute_voice_end(c)
+    def _compute_voice_end(self,c):
         if self.win.p.slow_video_for_voice:
             starts=getattr(self.win,'_cue_starts',[]);i=bisect.bisect_right(starts,c.start)
             return min(c.end,starts[i] if i<len(starts) else c.end)
         row=self.win.rows.get(c.id)
-        if row and str(self.win.cache/(raw_key(c,self.win.p)+'.mp3'))==row.get('raw'):
+        if row and self.win.row_status(c)[0] in ('ready','cached','long'):
             factor=max(1,row['duration']/((c.end-c.start)/self.win.p.work_speed))
             return max(c.end,c.start+row['duration']/min(factor,self.win.p.max_fit)*self.win.p.work_speed)
         return c.end
     def hit(self,t,y):
         if not 60<=y<=123:return None
-        return next((c for c in reversed(self.win.p.cues) if c.start<=t<=(self.voice_end(c) if y>=92 else c.end)),None)
+        return next((c for c in reversed(self.visible_cues(t,t)) if c.start<=t<=(self.voice_end(c) if y>=92 else c.end)),None)
     def targets(self,exclude):
         points=[0.,self.win.p.duration,self.cursor]
         for c in self.win.p.cues:
             if c.id not in exclude:points.extend((c.start,c.end))
         if self.win.selection:points.extend(self.win.selection)
         if self.win._batch_segment:points.extend(self.win._batch_segment)
-        return points
+        return sorted(points)
     def finalize(self):
         ids=set(self.selected_ids);primary=self.win.selected
         self.win.p.cues.sort(key=lambda c:c.start);self.win.changed();self.choose(ids,primary)
@@ -463,19 +491,21 @@ class Timeline(QWidget):
         tolerance=min(.2,8/self.zoom)
         if d['mode']=='move':
             if snap:
-                corrections=[timeline_snap(v+delta,d['targets'],tolerance)-(v+delta) for v in (a,b)]
+                corrections=[indexed_snap(v+delta,d['targets'],tolerance)-(v+delta) for v in (a,b)]
                 corrections=[v for v in corrections if abs(v)>1e-9]
                 if corrections:delta+=min(corrections,key=abs)
             changed=timeline_move(snapshot,delta,self.win.p.duration)
         elif d['mode']=='left':
-            value=timeline_snap(a+delta,d['targets'],tolerance) if snap else a+delta
+            value=indexed_snap(a+delta,d['targets'],tolerance) if snap else a+delta
             changed={d['id']:(round(max(0,min(b-.04,value)),3),b)}
         else:
-            value=timeline_snap(b+delta,d['targets'],tolerance) if snap else b+delta
+            value=indexed_snap(b+delta,d['targets'],tolerance) if snap else b+delta
             changed={d['id']:(a,round(max(a+.04,min(self.win.p.duration,value)),3))}
         if changed!=snapshot and not d['undo']:self.win.push_undo();d['undo']=True
         for c in self.win.p.cues:
-            if c.id in changed:c.start,c.end=changed[c.id]
+            if c.id in changed:
+                c.start,c.end=changed[c.id]
+                getattr(self.win,'_row_status_cache',{}).pop(c.id,None)
         self.update()
     def mouseReleaseEvent(self,event):
         d=self.drag;self.drag=None;self.unsetCursor()
@@ -782,7 +812,7 @@ class Window(QMainWindow):
         self.media_details.setText(f'{self.p.width}×{self.p.height} · {stamp(self.p.duration)} · {len(self.p.cues):,} câu')
         self.refresh_effect_preview()
         self.sync_subtitle_position();self.preview.update_subtitle_box();self.refresh_workflow()
-        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.14'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
+        self.setWindowTitle(('• ' if self.dirty else '')+'HUYỄN ẢNH Studio v0.3.15'+(' · '+self.project_path.name if self.project_path else ' · Dự án mới'))
     def load_controls(self):
         self.syncing=True;p=self.p;st=p.style;m=p.mask
         self.preset.setCurrentIndex(next((i for i,(_,values) in enumerate(SUBTITLE_PRESETS) if all(st.get(k,v)==v for k,v in values.items())),len(SUBTITLE_PRESETS)))
@@ -1273,12 +1303,16 @@ class Window(QMainWindow):
             self.status.setText('Đã mở bản xem nhẹ. Bấm Phát; khi xuất vẫn dùng video gốc.')
         self.start_job(prepare,done,'Chuẩn bị bản xem nhẹ')
     def on_position(self,ms):
+        key=(ms,getattr(self,'_view_revision',0),id(self.p.cues),self.preview_mode.currentIndex())
+        if getattr(self,'_last_position_key',None)==key:return
+        self._last_position_key=key
+        if not hasattr(self,'_cue_index') or self._cue_index.source is not self.p.cues:self._cue_index=IntervalIndex(self.p.cues)
         self._screen_time=ms/1000
         t=ms/1000;self.time_label.setText(f'Gốc {stamp(t)} · Xem {stamp(self.work_time(t)/(self.p.final_speed if self.preview_mode.currentIndex()==1 else 1))}')
         if not self.scrub.isSliderDown():self.scrub.setValue(ms)
-        active=[c.text for c in self.p.cues if c.start<=t<c.end and plain(c.text)]
+        active=[c.text for c in self._cue_index.active(t) if plain(c.text)]
         if getattr(self,'_timing',None):
-            work=self.work_time(t);active=[c.text for c in self._retimed_captions if c.start<=work<c.end and plain(c.text)]
+            work=self.work_time(t);active=[c.text for c in self._caption_index.active(work) if plain(c.text)]
         self.preview.overlay.text='\n'.join(active);self.preview.overlay.update();self.timeline.cursor=t
         if self.player.playbackState()==QMediaPlayer.PlayingState:
             self.reveal_cursor(t)
@@ -1381,16 +1415,25 @@ class Window(QMainWindow):
         if abs(self.player.playbackRate()-rate)>base*.003:self.player.setPlaybackRate(rate)
         self._sync_last_adjust=now
     def refresh_voice_state(self):
-        batch=None;ready=voice_ready(self.p,self.cache);self._voice_offset_ms=0
+        self._view_revision=getattr(self,'_view_revision',0)+1
+        self._row_status_cache={};self._raw_audio_names=set()
+        try:
+            with os.scandir(self.cache) as entries:
+                self._raw_audio_names={e.name for e in entries if re.fullmatch(r'[a-f0-9]{24}\.mp3',e.name) and e.is_file() and e.stat().st_size>0}
+        except OSError:pass
+        manifest=load_manifest(self.cache)
+        batch=None;ready=voice_ready(self.p,self.cache,manifest=manifest);self._voice_offset_ms=0
         was_ready=getattr(self,'voice_is_ready',False);self.voice_is_ready=ready
         self._cue_starts=sorted({c.start for c in self.p.cues})
-        self._timing=load_manifest(self.cache).get('timing') if ready and self.p.slow_video_for_voice else None
+        self._cue_index=IntervalIndex(self.p.cues)
+        self._timing=manifest.get('timing') if ready and self.p.slow_video_for_voice else None
         self._retimed_captions=retimed_cues(self.p,self._timing) if self._timing else []
+        self._caption_index=IntervalIndex(self._retimed_captions)
         self.audio.setVolume(self.p.original_gain)
         if was_ready and not ready:self.player.setPlaybackRate(self.play_speed())
         src=QUrl();self._voice_gain_ready=not ready
         if ready:
-            source=voice_track_path(self.cache);target=voice_playback_path(source,self.p.voice_volume,self.cache)
+            source=Path(manifest.get('track') or self.cache/'voice.wav');target=voice_playback_path(source,self.p.voice_volume,self.cache)
             self._voice_gain_ready=self.p.voice_volume<=1 or target.is_file() and target.stat().st_size>44
             if self._voice_gain_ready:src=QUrl.fromLocalFile(str(target))
         if self.voice_player.source()!=src:self.voice_player.setSource(src)
@@ -1399,14 +1442,24 @@ class Window(QMainWindow):
             count=sum(self.row_status(c)[0] in ('ready','cached','long') for c in spoken)
             self.voice_summary.setText(f'Voice: {count}/{len(spoken)} · {bad} câu dài')
             self.voice_summary.setToolTip(f'Voice: {count}/{len(spoken)} câu có MP3 · {bad} câu dài'+(' · Đang nghe voice riêng của lô' if ready and batch is not None else ' · Đã ghép để nghe' if ready else ' · Cần ghép để nghe'))
+        if hasattr(self,'timeline'):self.timeline.rebuild_index()
 
     def row_status(self,c):
+        cached=getattr(self,'_row_status_cache',None)
+        if cached is not None and c.id in cached:return cached[c.id]
+        result=self.compute_row_status(c)
+        if cached is not None:cached[c.id]=result
+        return result
+    def compute_row_status(self,c):
         if not plain(c.text):return 'empty','Trống'
+        names=getattr(self,'_raw_audio_names',None)
+        if names is not None and not names:return 'none','Chưa tạo'
         raw=self.cache/(raw_key(c,self.p)+'.mp3')
-        if not raw.is_file() or raw.stat().st_size==0:return 'none','Chưa tạo'
+        if names is not None:
+            if raw.name not in names:return 'none','Chưa tạo'
+        elif not raw.is_file() or raw.stat().st_size==0:return 'none','Chưa tạo'
         row=self.rows.get(c.id)
-        if not row:return ('cached','Có MP3') if (self.cache/(raw_key(c,self.p)+'.mp3')).exists() else ('none','Chưa tạo')
-        raw=self.cache/(raw_key(c,self.p)+'.mp3')
+        if not row:return 'cached','Có MP3'
         if str(raw)!=row.get('raw'):return 'none','Cần tạo lại'
         factor=max(1,row['duration']/((c.end-c.start)/self.p.work_speed))
         if self.p.slow_video_for_voice:return 'ready' if voice_ready_cached(self) else 'cached','Giữ giọng · giãn video' if factor>1 else 'Giữ giọng'

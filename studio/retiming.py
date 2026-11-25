@@ -3,6 +3,18 @@ from bisect import bisect_right
 import math
 
 
+class TimingMap(dict):
+    """Same JSON schema, with lookup arrays held outside serialized dictionary keys."""
+    def __init__(self, value):
+        super().__init__(value)
+        self.source_starts = tuple(s['start'] for s in self['spans'])
+        self.output_starts = tuple(s['out_start'] for s in self['spans'])
+
+
+def prepare_timing(timing):
+    return timing if isinstance(timing, TimingMap) else TimingMap(timing)
+
+
 def voice_timing(project, rows):
     measured={r['id']:r for r in rows}
     groups=[]
@@ -33,14 +45,15 @@ def voice_timing(project, rows):
             position+=duration+.04
         cursor=end
     if cursor<project.duration:append(cursor,project.duration,(project.duration-cursor)/project.work_speed)
-    return dict(spans=spans,rows=scheduled,duration=out)
+    return TimingMap(dict(spans=spans,rows=scheduled,duration=out))
 
 
 def map_time(timing,value,inverse=False):
     spans=timing['spans']
     if not spans:return 0.
     a,b,c,d=('out_start','out_end','start','end') if inverse else ('start','end','out_start','out_end')
-    index=max(0,min(len(spans)-1,bisect_right([s[a] for s in spans],value)-1))
+    starts=(timing.output_starts if inverse else timing.source_starts) if isinstance(timing,TimingMap) else [s[a] for s in spans]
+    index=max(0,min(len(spans)-1,bisect_right(starts,value)-1))
     s=spans[index];fraction=max(0.,min(1.,(value-s[a])/(s[b]-s[a])))
     return s[c]+fraction*(s[d]-s[c])
 
@@ -48,7 +61,8 @@ def map_time(timing,value,inverse=False):
 def source_rate(timing,value,final_speed=1.):
     spans=timing['spans']
     if not spans:return final_speed
-    i=max(0,min(len(spans)-1,bisect_right([s['start'] for s in spans],value)-1))
+    starts=timing.source_starts if isinstance(timing,TimingMap) else [s['start'] for s in spans]
+    i=max(0,min(len(spans)-1,bisect_right(starts,value)-1))
     s=spans[i]
     return (s['end']-s['start'])/(s['out_end']-s['out_start'])*final_speed
 

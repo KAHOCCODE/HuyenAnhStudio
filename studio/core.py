@@ -4,7 +4,7 @@ import asyncio, copy, hashlib, json, math, os, re, shutil, subprocess, threading
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Callable
-from .retiming import voice_timing, map_time, source_rate
+from .retiming import voice_timing, map_time, source_rate, prepare_timing
 from .video_effects import settings as effect_settings, output_size, picture_filter
 from .composition import validate_composition, prepare_layers, artwork_filter, sidebar_settings, subtitle_area
 from .tts import TTSCooldown, TTSServiceError, TTSDeferredRetry, fetch_voice, speech_text, context as _tts_context, edge_client
@@ -169,6 +169,7 @@ def write_srt(path,cues,speed=1):
 
 def retimed_cues(p,timing):
     from bisect import bisect_right
+    timing=prepare_timing(timing)
     starts=sorted(r['start'] for r in timing['rows'].values())
     result=[]
     for cue in p.cues:
@@ -337,16 +338,21 @@ def signature(p):
     return hashlib.sha256(json.dumps(['timing-v3',p.slow_video_for_voice,p.duration,p.work_speed,p.max_fit,[[c.id,c.start,c.end,raw_key(c,p)] for c in p.cues]],sort_keys=True).encode()).hexdigest()
 
 def load_manifest(cache):
-    try: return json.loads((Path(cache)/'voices.json').read_text(encoding='utf-8'))
+    try:
+        result=json.loads((Path(cache)/'voices.json').read_text(encoding='utf-8'))
+        timing=result.get('timing')
+        if isinstance(timing,dict) and isinstance(timing.get('spans'),list):result['timing']=prepare_timing(timing)
+        return result
     except (OSError,ValueError): return {}
 
 def atomic_json(path,data):
     path=Path(path);temp=path.with_suffix(path.suffix+'.tmp')
     temp.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8');temp.replace(path)
 
-def voice_ready(p,cache):
-    m=load_manifest(cache)
-    if m.get('signature')!=signature(p) or not voice_track_path(cache).is_file():return False
+def voice_ready(p,cache,manifest=None):
+    m=load_manifest(cache) if manifest is None else manifest
+    if not m.get('signature'):return False
+    if m.get('signature')!=signature(p) or not Path(m.get('track') or Path(cache)/'voice.wav').is_file():return False
     missing=set(m.get('missing',[]))
     # A single-cue preview or a cancelled batch may have filled a formerly missing cue.
     return not any(c.id in missing and (Path(cache)/(raw_key(c,p)+'.mp3')).is_file() for c in p.cues)
@@ -953,6 +959,8 @@ def batch_manifest(p,cache,segment):
     if m.get('signature')!=batch_signature(p,segment) or not Path(m.get('track','')).is_file():return {}
     missing=set(m.get('missing',[]))
     if any(c.id in missing and (Path(cache)/(raw_key(c,p)+'.mp3')).is_file() for c in p.cues):return {}
+    timing=m.get('timing')
+    if isinstance(timing,dict) and isinstance(timing.get('spans'),list):m['timing']=prepare_timing(timing)
     return m
 
 def batch_preview_path(p,cache,start,end):

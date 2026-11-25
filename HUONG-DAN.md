@@ -1,4 +1,4 @@
-# HUYỄN ẢNH Studio 0.3.14 — lọc giọng theo giới tính và vùng miền
+# HUYỄN ẢNH Studio 0.3.15 — tối ưu phát và tua video dài
 
 ## Cập nhật từ nhánh đang dùng
 
@@ -11,6 +11,16 @@ start.cmd
 ```
 
 Không cần đổi nhánh. Hai giọng Edge tiếp tục dùng bộ cài hiện có. Để dùng bộ giọng mới, đóng app và chạy **CAI-GIONG-MIEN-PHI.cmd** một lần trước khi mở lại `start.cmd`.
+
+## Bản 0.3.15: phát / tua dự án nhiều giờ
+
+App tra cứu phụ đề và vùng timeline theo chỉ mục thời gian thay vì quét toàn bộ SRT ở mỗi khung hình. Trạng thái MP3 được đọc khi nạp / cập nhật dự án và dùng lại khi vẽ; không kiểm tra ổ đĩa cho từng cue mỗi lần di chuyển con trỏ. Chỉnh lời, đổi giọng, tạo / xóa âm thanh hoặc mở dự án vẫn cập nhật lại trạng thái tương ứng.
+
+Khi thu nhỏ để xem toàn bộ phim dài, các khối quá nhỏ được gộp theo độ rộng màn hình. Phóng to vẫn xem, chọn và kéo chính xác từng câu; dữ liệu SRT và mốc xuất không bị gộp. Con trỏ phát dùng lại hình học timeline đã chuẩn bị, kể cả khi phim có hàng chục nghìn cue.
+
+Các mốc video / giọng đã kéo giãn có bảng tra cứu sẵn trong bộ nhớ. Tua tới cuối phim và chuẩn bị phụ đề xem trước không dựng lại cả danh sách mốc cho từng câu. Định dạng dự án, MP3, SRT và quy tắc giãn hình theo giọng tiếp tục dùng như trước.
+
+Kiểm tra gồm dự án mô phỏng 6 giờ / 24.000 cue, phụ đề chồng mốc, thao tác kéo, đổi nội dung, xóa MP3 và nguồn video tổng hợp dài 6 giờ để tua gần cuối bằng CPU. Đo trên môi trường kiểm tra, lần vẽ toàn timeline giảm từ khoảng 2,15 giây xuống 0,25 giây; lần vẽ tiếp theo dùng lại dữ liệu khoảng 0,03 giây. Đây là đo phần giao diện, không phải cam kết tốc độ giải mã video thực tế trên mọi máy / codec.
 
 ## Bản 0.3.14: phân loại giọng Việt
 
